@@ -33,6 +33,36 @@ impl CryoApp {
         )
         .on_hover_text("channel B has no sensor on this instrument; never used for stability");
 
+        // ---- loop control: after STOP, setpoints don't heat until ON ----
+        ui.horizontal(|ui| {
+            let (color, text) = match self.control_on {
+                Some(true) => (egui::Color32::from_rgb(0x0c, 0xa3, 0x0c), "control ON"),
+                Some(false) => (super::RED, "control OFF"),
+                None => (MUTED, "control ? (not commanded this session)"),
+            };
+            ui.colored_label(color, "●").on_hover_text(text);
+            ui.label(egui::RichText::new(text).color(INK2));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let on = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("control on").color(egui::Color32::WHITE),
+                    )
+                    .fill(egui::Color32::from_rgb(0x0c, 0xa3, 0x0c)),
+                );
+                if on.clicked() {
+                    self.set_control(true);
+                }
+                if ui.button("control off").clicked() {
+                    self.set_control(false);
+                }
+            });
+        })
+        .response
+        .on_hover_text(
+            "the instrument's CONTROL/STOP for all loops. After STOP ALL the \
+             setpoint is stored but nothing heats until control is on again.",
+        );
+
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(6.0);

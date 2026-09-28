@@ -75,6 +75,11 @@ pub struct CryoApp {
     /// STOP ALL / disconnect finalizes the log; polls must not silently
     /// open a fresh file afterwards.
     pub log_finalized: bool,
+    /// Loop control state as last commanded *by this app* (None = unknown,
+    /// e.g. right after connecting). The instrument has no safe query for
+    /// it, so we track our own commands; after `STOP` setpoints are stored
+    /// but nothing heats until `CONTROL` re-engages the loops.
+    pub control_on: Option<bool>,
 
     // manual set controls
     pub manual_setpoint: String,
@@ -113,6 +118,7 @@ impl CryoApp {
             jump_confirm_k: 10.0,
             pending_set: None,
             log_finalized: false,
+            control_on: None,
             manual_setpoint: "298".into(),
             manual_type: 0,
         }
@@ -178,7 +184,25 @@ impl CryoApp {
         self.history.clear();
         self.t0 = std::time::Instant::now();
         self.log_finalized = false; // new session, new log allowed
+        self.control_on = None; // unknown until we command it
         self.console_push(format!("connecting to {}:{} ...", self.host, port));
+    }
+
+    /// Engage or disengage loop control (the instrument's CONTROL / STOP).
+    /// A stored setpoint only heats once control is ON.
+    pub fn set_control(&mut self, on: bool) {
+        let reply = self.ask(if on { DeviceCmd::Control } else { DeviceCmd::Stop });
+        let ok = matches!(reply, Some(crate::device::DeviceReply::Ok));
+        self.control_on = Some(on).filter(|_| ok);
+        let event = if on { "control on" } else { "control off" };
+        self.console_push(if ok {
+            event.to_string()
+        } else {
+            format!("ERROR: {event} command failed")
+        });
+        if ok {
+            self.csv_row(&event);
+        }
     }
 
     /// The one big red button: heaters off, schedule aborted, log closed.
@@ -203,6 +227,14 @@ impl CryoApp {
             self.console_push("STOP ALL — nothing was running".into());
         } else {
             self.console_push(format!("STOP ALL — {}", parts.join(", ")));
+        }
+        self.control_on = if self.link.is_some() { Some(false) } else { None };
+        if self.link.is_some() {
+            self.console_push(
+                "loops are now OFF: setpoints are stored but will not heat \
+                 until 'control on' (left panel) or a schedule 'control' step"
+                    .into(),
+            );
         }
     }
 
@@ -261,6 +293,13 @@ impl CryoApp {
         }
         if let Some(t) = &typ {
             let _ = self.ask(DeviceCmd::SetLoopType { loop_n, typ: t.clone() });
+        }
+        if self.control_on != Some(true) {
+            self.console_push(
+                "note: loops are OFF — setpoint stored, but nothing heats \
+                 until 'control on'"
+                    .into(),
+            );
         }
         match self.ask(DeviceCmd::SetSetpoint { loop_n, value: clamped }) {
             Some(crate::device::DeviceReply::Ok) => {
@@ -364,6 +403,13 @@ impl CryoApp {
                     // step headers ("[2/5] set loop1 -> 299") also go to CSV
                     if line.starts_with('[') {
                         if let Some(event) = line.split("] ").nth(1) {
+                            // keep our view of the control state in sync with
+                            // what the schedule commanded
+                            match event {
+                                "control ON" => self.control_on = Some(true),
+                                "control STOP" => self.control_on = Some(false),
+                                _ => {}
+                            }
                             self.csv_row(event);
                         }
                     }
