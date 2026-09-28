@@ -129,6 +129,32 @@ impl CryoApp {
                 return;
             }
         };
+        // Ask where this session's log should live — every session, so the
+        // choice can never be a forgotten stale default.
+        if self.logging_enabled {
+            match rfd::FileDialog::new()
+                .set_title("folder for this session's CSV log")
+                .set_directory(&self.log_dir)
+                .pick_folder()
+            {
+                Some(dir) => {
+                    self.log_dir = dir;
+                    self.csv = None; // a fresh file is created in that folder
+                    self.console_push(format!(
+                        "log folder for this session: {}",
+                        self.log_dir.display()
+                    ));
+                }
+                None => {
+                    self.logging_enabled = false;
+                    self.console_push(
+                        "no folder chosen — CSV logging is OFF for this session \
+                         (re-enable via the checkbox + folder… button)"
+                            .into(),
+                    );
+                }
+            }
+        }
         let (req_tx, req_rx) = std::sync::mpsc::channel();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel();
         Worker::spawn(self.host.clone(), port, req_rx, ev_tx);
@@ -137,6 +163,31 @@ impl CryoApp {
         self.history.clear();
         self.t0 = std::time::Instant::now();
         self.console_push(format!("connecting to {}:{} ...", self.host, port));
+    }
+
+    /// The one big red button: heaters off, schedule aborted, log closed.
+    /// Always says what it did — even when there was nothing to stop.
+    fn stop_all(&mut self) {
+        let mut acted = false;
+        if let Some(r) = &self.runner {
+            r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
+            self.console_push("schedule aborted".into());
+            acted = true;
+        }
+        if self.link.is_some() {
+            let _ = self.ask(DeviceCmd::Stop);
+            acted = true;
+        }
+        if let Some(csv) = self.csv.take() {
+            // `take()` closes the file at the end of this statement
+            self.console_push(format!("log closed: {}", csv.path.display()));
+            acted = true;
+        }
+        self.console_push(if acted {
+            "STOP ALL — heaters off, log closed".into()
+        } else {
+            "STOP ALL pressed — nothing was running".into()
+        });
     }
 
     fn disconnect(&mut self) {
@@ -345,8 +396,37 @@ impl eframe::App for CryoApp {
                             .on_hover_text("larger jumps are the risky ones");
                     }
                     ui.separator();
+                    let running = self.runner.is_some();
+                    if running {
+                        ui.label(
+                            egui::RichText::new(
+                                "a schedule is running — the next schedule step \
+                                 would take the setpoint back",
+                            )
+                            .small()
+                            .color(INK2),
+                        );
+                    }
                     ui.horizontal(|ui| {
-                        if ui.button("confirm").clicked() {
+                        let apply = if running {
+                            ui.button("apply — schedule continues")
+                        } else {
+                            ui.button("confirm")
+                        };
+                        if apply.clicked() {
+                            self.pending_set = None;
+                            // clone: two buttons may both reference `typ`,
+                            // and the compiler cannot know only one fires
+                            self.do_set(loop_n, value, typ.clone(), true);
+                        }
+                        if running
+                            && ui
+                                .button(egui::RichText::new("apply & abort schedule").color(RED))
+                                .clicked()
+                        {
+                            if let Some(r) = &self.runner {
+                                r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
                             self.pending_set = None;
                             self.do_set(loop_n, value, typ, true);
                         }
@@ -398,8 +478,22 @@ impl CryoApp {
                 ui.separator();
                 ui.checkbox(&mut self.logging_enabled, "CSV log");
                 if ui.button("folder…").clicked() {
-                    if let Some(d) = rfd::FileDialog::new().pick_folder() {
+                    if let Some(d) = rfd::FileDialog::new()
+                        .set_title("log folder for the NEXT session")
+                        .set_directory(&self.log_dir)
+                        .pick_folder()
+                    {
                         self.log_dir = d;
+                        match &self.csv {
+                            Some(_open_log) => self.console_push(format!(
+                                "next session logs to {} (current file keeps going)",
+                                self.log_dir.display()
+                            )),
+                            None => self.console_push(format!(
+                                "log folder set: {}",
+                                self.log_dir.display()
+                            )),
+                        }
                     }
                 }
                 ui.label(
@@ -409,21 +503,17 @@ impl CryoApp {
                 .on_hover_text(self.log_dir.display().to_string());
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let stop = ui.add_sized(
-                        [110.0, 28.0],
-                        egui::Button::new(
-                            egui::RichText::new("STOP ALL").color(egui::Color32::WHITE),
-                        )
-                        .fill(RED),
-                    );
-                    if stop.clicked() {
-                        if let Some(r) = &self.runner {
-                            r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        if self.link.is_some() {
-                            let _ = self.ask(DeviceCmd::Stop);
-                            self.console_push("STOP ALL sent (heaters off, schedule aborted)".into());
-                        }
+                    // Quiet by default; loud (filled red) exactly when a
+                    // schedule is running and stopping actually matters.
+                    let hot = self.runner.is_some();
+                    let text = egui::RichText::new("STOP ALL")
+                        .color(if hot { egui::Color32::WHITE } else { RED });
+                    let mut btn = egui::Button::new(text);
+                    if hot {
+                        btn = btn.fill(RED);
+                    }
+                    if ui.add_sized([110.0, 28.0], btn).clicked() {
+                        self.stop_all();
                     }
                 });
             });

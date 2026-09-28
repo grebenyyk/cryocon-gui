@@ -4,6 +4,21 @@
 use super::{CryoApp, BLUE, INK2, MUTED, ORANGE, TYPES};
 use egui_plot::{Legend, Line, Plot};
 
+/// One line of help per loop type (hover the dropdown entries).
+const TYPE_HELP: [&str; 6] = [
+    "PID — classic feedback: drive straight to the setpoint as fast as the \
+     tuned PID allows (a step change).",
+    "RampP — glide to the setpoint at the loop's ramp rate (K/min, the \
+     'rate' schedule command). The gentle option for real samples.",
+    "RampT — reach the setpoint over a fixed time period; the period is a \
+     separate loop setting (front panel / command port, not exposed here).",
+    "Man — manual heater power: the setpoint field is ignored and the loop \
+     outputs a fixed percentage (the 'Pmanual' setting). For heater tests.",
+    "Off — loop disabled, no heating at all.",
+    "Table — follow a setpoint/PID table stored in the instrument (not \
+     editable from this app).",
+];
+
 impl CryoApp {
     pub fn live_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("live");
@@ -33,11 +48,22 @@ impl CryoApp {
                 .selected_text(TYPES[self.manual_type])
                 .show_ui(ui, |ui| {
                     for (i, t) in TYPES.iter().enumerate() {
-                        ui.selectable_value(&mut self.manual_type, i, *t);
+                        ui.selectable_value(&mut self.manual_type, i, *t)
+                            .on_hover_text(TYPE_HELP[i]);
                     }
                 });
             ui.end_row();
         });
+        ui.label(
+            egui::RichText::new("for experiments: RampP (smooth glide at the ramp rate)")
+                .small()
+                .color(MUTED),
+        )
+        .on_hover_text(
+            "RampP approaches the setpoint at LOOP 1:RATE (K/min). Note: on the \
+             reference instrument the firmware executes ~0.84x the commanded \
+             rate — measure once, then compensate.",
+        );
         if ui.button("apply").clicked() {
             if let Ok(v) = self.manual_setpoint.trim().parse::<f64>() {
                 self.do_set(1, v, Some(TYPES[self.manual_type].to_string()), false);
