@@ -1,6 +1,6 @@
 //! Schedule editor, run controls, and the console pane.
 
-use super::{CryoApp, MUTED, RED};
+use super::{CryoApp, RED};
 use crate::schedule;
 
 impl CryoApp {
