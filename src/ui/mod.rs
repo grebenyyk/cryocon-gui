@@ -68,8 +68,13 @@ pub struct CryoApp {
     // safety
     pub max_setpoint: f64,
     pub jump_confirm_k: f64,
-    /// a set command waiting for the user to confirm (jump > threshold)
-    pub pending_set: Option<(u8, f64, Option<String>)>,
+    /// A set command going through confirmation. Two stages, in order:
+    /// first decide what happens to a running schedule, then (only if the
+    /// jump is big) confirm the jump itself.
+    pub pending_set: Option<PendingSet>,
+    /// STOP ALL / disconnect finalizes the log; polls must not silently
+    /// open a fresh file afterwards.
+    pub log_finalized: bool,
 
     // manual set controls
     pub manual_setpoint: String,
@@ -77,6 +82,15 @@ pub struct CryoApp {
 }
 
 pub const TYPES: [&str; 6] = ["PID", "RampP", "RampT", "Man", "Off", "Table"];
+
+/// Staged confirmation for a manual set (see `CryoApp::pending_set`).
+#[derive(Clone, Debug)]
+pub enum PendingSet {
+    /// a schedule is running: decide its fate first
+    ScheduleChoice { loop_n: u8, value: f64, typ: Option<String> },
+    /// big jump: confirm it (carrying the schedule decision, if any)
+    JumpConfirm { loop_n: u8, value: f64, typ: Option<String>, abort_schedule: bool },
+}
 
 impl CryoApp {
     pub fn new() -> Self {
@@ -98,6 +112,7 @@ impl CryoApp {
             max_setpoint: 300.0,
             jump_confirm_k: 10.0,
             pending_set: None,
+            log_finalized: false,
             manual_setpoint: "298".into(),
             manual_type: 0,
         }
@@ -162,32 +177,33 @@ impl CryoApp {
         self.link_state = LinkState::Connecting;
         self.history.clear();
         self.t0 = std::time::Instant::now();
+        self.log_finalized = false; // new session, new log allowed
         self.console_push(format!("connecting to {}:{} ...", self.host, port));
     }
 
     /// The one big red button: heaters off, schedule aborted, log closed.
-    /// Always says what it did — even when there was nothing to stop.
+    /// Reports exactly which of those actually happened.
     fn stop_all(&mut self) {
-        let mut acted = false;
+        let mut parts: Vec<String> = Vec::new();
         if let Some(r) = &self.runner {
             r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
-            self.console_push("schedule aborted".into());
-            acted = true;
+            parts.push("schedule aborted".into());
         }
         if self.link.is_some() {
             let _ = self.ask(DeviceCmd::Stop);
-            acted = true;
+            parts.push("heaters stopped".into());
         }
         if let Some(csv) = self.csv.take() {
-            // `take()` closes the file at the end of this statement
+            // `take()` drops (and closes) the file when this binding dies
             self.console_push(format!("log closed: {}", csv.path.display()));
-            acted = true;
+            self.log_finalized = true; // polls must not open a fresh file
+            parts.push("log closed".into());
         }
-        self.console_push(if acted {
-            "STOP ALL — heaters off, log closed".into()
+        if parts.is_empty() {
+            self.console_push("STOP ALL — nothing was running".into());
         } else {
-            "STOP ALL pressed — nothing was running".into()
-        });
+            self.console_push(format!("STOP ALL — {}", parts.join(", ")));
+        }
     }
 
     fn disconnect(&mut self) {
@@ -201,8 +217,17 @@ impl CryoApp {
         self.console_push("disconnected".into());
     }
 
+    /// Is the jump from the current setpoint big enough to need a confirm?
+    fn needs_jump_confirm(&self, value: f64) -> bool {
+        self.snap
+            .setpoint_1
+            .map(|cur| (cur - value).abs() > self.jump_confirm_k)
+            .unwrap_or(true)
+    }
+
     /// Send a setpoint change through the safety checks.
-    /// `confirmed` skips the jump dialog (the dialog calls back with true).
+    /// Unconfirmed sets land in a staged dialog instead (see `PendingSet`):
+    /// schedule decision first, jump confirmation second.
     pub fn do_set(&mut self, loop_n: u8, value: f64, typ: Option<String>, confirmed: bool) {
         let clamped = if value > self.max_setpoint {
             self.console_push(format!(
@@ -213,15 +238,26 @@ impl CryoApp {
         } else {
             value
         };
-        let jump = self
-            .snap
-            .setpoint_1
-            .map(|cur| (cur - clamped).abs() > self.jump_confirm_k)
-            .unwrap_or(true);
-        let stepped = typ.as_deref().map(|t| !t.eq_ignore_ascii_case("RampP")).unwrap_or(true);
-        if !confirmed && (jump || stepped) {
-            self.pending_set = Some((loop_n, clamped, typ));
-            return;
+        if !confirmed {
+            if self.runner.is_some() {
+                // stage 1: what happens to the running schedule?
+                self.pending_set = Some(PendingSet::ScheduleChoice {
+                    loop_n,
+                    value: clamped,
+                    typ,
+                });
+                return;
+            }
+            if self.needs_jump_confirm(clamped) {
+                // no schedule involved: straight to the jump confirm
+                self.pending_set = Some(PendingSet::JumpConfirm {
+                    loop_n,
+                    value: clamped,
+                    typ,
+                    abort_schedule: false,
+                });
+                return;
+            }
         }
         if let Some(t) = &typ {
             let _ = self.ask(DeviceCmd::SetLoopType { loop_n, typ: t.clone() });
@@ -245,8 +281,10 @@ impl CryoApp {
     }
 
     /// Write one CSV row (if logging is on), using the latest snapshot.
+    /// After STOP ALL / disconnect the session's log is final — a new one
+    /// is only started by the next connect, never by a background poll.
     pub fn csv_row(&mut self, event: &str) {
-        if !self.logging_enabled {
+        if !self.logging_enabled || self.log_finalized {
             return;
         }
         if self.csv.is_none() {
@@ -366,10 +404,17 @@ impl eframe::App for CryoApp {
             .default_size(300.0)
             .min_size(220.0)
             .show(ui, |ui| self.live_panel(ui));
+        // the central column is one scrolling page: each section keeps its
+        // natural height instead of fighting for a slice of the window
         egui::CentralPanel::default().show(ui, |ui| {
-            self.charts(ui);
-            ui.add_space(6.0);
-            self.schedule_section(ui);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    self.charts(ui);
+                    ui.add_space(6.0);
+                    self.schedule_section(ui);
+                });
         });
 
         // keep the UI fresh while anything is running
@@ -377,64 +422,112 @@ impl eframe::App for CryoApp {
             ctx.request_repaint_after(std::time::Duration::from_millis(300));
         }
 
-        // modal confirmation for large setpoint jumps
-        if let Some((loop_n, value, typ)) = self.pending_set.clone() {
-            egui::Window::new("confirm setpoint change")
-                .collapsible(false)
-                .resizable(false)
-                .show(&ctx, |ui| {
-                    let current = self.snap.setpoint_1;
-                    ui.label(format!(
-                        "setpoint: {} -> {value} K{}",
-                        current.map(|v| format!("{v:.1}")).unwrap_or_else(|| "?".into()),
-                        typ.clone()
-                            .map(|t| format!("  (type {t})"))
-                            .unwrap_or_default(),
-                    ));
-                    if let Some(cur) = current {
-                        ui.label(format!("jump: {:.1} K", (cur - value).abs()))
-                            .on_hover_text("larger jumps are the risky ones");
-                    }
-                    ui.separator();
-                    let running = self.runner.is_some();
-                    if running {
+        // staged confirmation: schedule decision FIRST, jump confirm second
+        match self.pending_set.clone() {
+            Some(PendingSet::ScheduleChoice { loop_n, value, typ }) => {
+                egui::Window::new("a schedule is running")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(&ctx, |ui| {
+                        ui.label(format!(
+                            "manual setpoint: {} K{}",
+                            value,
+                            // as_deref(): borrow the String, keep `typ` usable below
+                            typ.as_deref()
+                                .map(|t| format!("  (type {t})"))
+                                .unwrap_or_default()
+                        ));
                         ui.label(
                             egui::RichText::new(
-                                "a schedule is running — the next schedule step \
-                                 would take the setpoint back",
+                                "the schedule's next step would take the setpoint back",
                             )
                             .small()
                             .color(INK2),
                         );
-                    }
-                    ui.horizontal(|ui| {
-                        let apply = if running {
-                            ui.button("apply — schedule continues")
-                        } else {
-                            ui.button("confirm")
-                        };
-                        if apply.clicked() {
-                            self.pending_set = None;
-                            // clone: two buttons may both reference `typ`,
-                            // and the compiler cannot know only one fires
-                            self.do_set(loop_n, value, typ.clone(), true);
-                        }
-                        if running
-                            && ui
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("apply — schedule continues").clicked() {
+                                // clone: the second button below also owns `typ`
+                                self.pending_set = if self.needs_jump_confirm(value) {
+                                    Some(PendingSet::JumpConfirm {
+                                        loop_n,
+                                        value,
+                                        typ: typ.clone(),
+                                        abort_schedule: false,
+                                    })
+                                } else {
+                                    self.do_set(loop_n, value, typ.clone(), true);
+                                    None
+                                };
+                            }
+                            if ui
                                 .button(egui::RichText::new("apply & abort schedule").color(RED))
                                 .clicked()
-                        {
-                            if let Some(r) = &self.runner {
-                                r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
+                            {
+                                self.pending_set = if self.needs_jump_confirm(value) {
+                                    Some(PendingSet::JumpConfirm {
+                                        loop_n,
+                                        value,
+                                        typ,
+                                        abort_schedule: true,
+                                    })
+                                } else {
+                                    if let Some(r) = &self.runner {
+                                        r.abort
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                    self.do_set(loop_n, value, typ, true);
+                                    None
+                                };
                             }
-                            self.pending_set = None;
-                            self.do_set(loop_n, value, typ, true);
-                        }
-                        if ui.button("cancel").clicked() {
-                            self.pending_set = None;
-                        }
+                            if ui.button("cancel").clicked() {
+                                self.pending_set = None;
+                            }
+                        });
                     });
-                });
+            }
+            Some(PendingSet::JumpConfirm { loop_n, value, typ, abort_schedule }) => {
+                egui::Window::new("confirm setpoint jump")
+                    .collapsible(false)
+                    .resizable(false)
+                    .show(&ctx, |ui| {
+                        let current = self.snap.setpoint_1;
+                        ui.label(format!(
+                            "setpoint: {} -> {value} K{}",
+                            current.map(|v| format!("{v:.1}")).unwrap_or_else(|| "?".into()),
+                            typ.clone()
+                                .map(|t| format!("  (type {t})"))
+                                .unwrap_or_default(),
+                        ));
+                        if let Some(cur) = current {
+                            ui.label(format!("jump: {:.1} K", (cur - value).abs()));
+                        }
+                        if abort_schedule {
+                            ui.label(
+                                egui::RichText::new("the schedule will be aborted too")
+                                    .small()
+                                    .color(INK2),
+                            );
+                        }
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            if ui.button("confirm").clicked() {
+                                if abort_schedule {
+                                    if let Some(r) = &self.runner {
+                                        r.abort
+                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                                self.pending_set = None;
+                                self.do_set(loop_n, value, typ, true);
+                            }
+                            if ui.button("cancel").clicked() {
+                                self.pending_set = None;
+                            }
+                        });
+                    });
+            }
+            None => {}
         }
     }
 }

@@ -8,24 +8,17 @@ impl CryoApp {
         ui.heading("schedule");
         ui.add_space(4.0);
 
-        // the whole schedule area scrolls, so nothing is ever cut off on
-        // small windows or long schedules
-        egui::ScrollArea::vertical()
-            .id_salt("schedule-scroll")
-            .auto_shrink([false, false])
-            .max_height(ui.available_height() - 170.0) // leave the console visible
-            .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-
-                ui.horizontal(|ui| {
-                    // ---- editor (left) ----------------------------------
-                    ui.vertical(|ui| {
-                        ui.add(
-                            egui::TextEdit::multiline(&mut self.schedule_text)
-                                .code_editor()
-                                .desired_rows(8)
-                                .desired_width(ui.available_width() * 0.7),
-                        );
+        // NB: the whole central column is one scrolling page (see mod.rs),
+        // so this section just takes its natural height.
+        ui.horizontal(|ui| {
+            // ---- editor (left) --------------------------------------
+            ui.vertical(|ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.schedule_text)
+                        .code_editor()
+                        .desired_rows(8)
+                        .desired_width(ui.available_width() * 0.7),
+                );
                 // validation: show every bad line, live
                 match schedule::parse(&self.schedule_text) {
                     Ok(steps) => {
@@ -102,9 +95,7 @@ impl CryoApp {
                     .color(MUTED),
                 );
             });
-            }); // <- editor + controls row
-
-            }); // <- scroll area
+        }); // <- editor + controls row
 
         ui.add_space(6.0);
         ui.separator();

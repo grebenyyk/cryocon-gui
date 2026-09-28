@@ -124,9 +124,11 @@ impl CryoApp {
             .filter_map(|s| s.power.map(|v| [s.t_min, v]))
             .collect();
 
+        // fixed, generous heights: the whole central column scrolls, so the
+        // plots no longer squeeze into whatever space the schedule left
         Plot::new("temperature")
             .legend(Legend::default())
-            .height(ui.available_height() * 0.42)
+            .height(280.0)
             .x_axis_label("elapsed, min")
             .y_axis_label("K")
             .show(ui, |p| {
@@ -139,7 +141,7 @@ impl CryoApp {
             });
         Plot::new("power")
             .legend(Legend::default())
-            .height(ui.available_height() * 0.38)
+            .height(220.0)
             .x_axis_label("elapsed, min")
             .y_axis_label("%")
             .show(ui, |p| {
