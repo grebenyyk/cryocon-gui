@@ -1,7 +1,7 @@
 //! Left panel: live readout tiles, manual setpoint control, safety
 //! settings; and the two central charts (temperature, heater power).
 
-use super::{CryoApp, BLUE, INK2, MUTED, ORANGE, TYPES};
+use super::{CryoApp, BLUE, GREEN, INK2, MUTED, ORANGE, RED, TYPES};
 use egui_plot::{Legend, Line, Plot};
 
 /// One line of help per loop type (hover the dropdown entries).
@@ -35,19 +35,22 @@ impl CryoApp {
 
         // ---- loop control: after STOP, setpoints don't heat until ON ----
         ui.horizontal(|ui| {
-            let (color, text) = match self.control_on {
-                Some(true) => (egui::Color32::from_rgb(0x0c, 0xa3, 0x0c), "control ON"),
-                Some(false) => (super::RED, "control OFF"),
-                None => (MUTED, "control ? (not commanded this session)"),
+            let (color, status) = match self.control_on {
+                Some(true) => (GREEN, "control ON"),
+                Some(false) => (RED, "control OFF"),
+                None => (MUTED, "control ?"),
             };
-            ui.colored_label(color, "●").on_hover_text(text);
-            ui.label(egui::RichText::new(text).color(INK2));
+            ui.colored_label(color, "●").on_hover_text(
+                "the instrument's CONTROL/STOP for all loops. After STOP ALL \
+                 the setpoint is stored but nothing heats until control is on.",
+            );
+            ui.label(egui::RichText::new(status).color(INK2).strong());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let on = ui.add(
                     egui::Button::new(
                         egui::RichText::new("control on").color(egui::Color32::WHITE),
                     )
-                    .fill(egui::Color32::from_rgb(0x0c, 0xa3, 0x0c)),
+                    .fill(GREEN),
                 );
                 if on.clicked() {
                     self.set_control(true);
@@ -56,12 +59,7 @@ impl CryoApp {
                     self.set_control(false);
                 }
             });
-        })
-        .response
-        .on_hover_text(
-            "the instrument's CONTROL/STOP for all loops. After STOP ALL the \
-             setpoint is stored but nothing heats until control is on again.",
-        );
+        });
 
         ui.add_space(10.0);
         ui.separator();

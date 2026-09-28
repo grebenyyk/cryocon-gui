@@ -68,10 +68,17 @@ impl CryoApp {
             ui.vertical(|ui| {
                 let running = self.runner.is_some();
                 ui.add_enabled_ui(!running, |ui| {
-                    if ui
-                        .button(egui::RichText::new("run").strong())
-                        .clicked()
-                    {
+                    // the primary action gets the primary styling
+                    let run = ui.add_sized(
+                        [96.0, 26.0],
+                        egui::Button::new(
+                            egui::RichText::new("run")
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        )
+                        .fill(super::BLUE),
+                    );
+                    if run.clicked() {
                         self.start_schedule(false);
                     }
                     if ui.button("dry run").clicked() {
@@ -96,18 +103,27 @@ impl CryoApp {
                 );
             });
         }); // <- editor + controls row
+    }
 
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        // ---- console ---------------------------------------------------
-        ui.heading("console");
+    /// Console: pinned bottom panel spanning the full window width, so its
+    /// scrollbar sits at the window edge instead of floating mid-screen.
+    pub fn console_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("console").strong().color(super::INK2),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("clear").clicked() {
+                    self.console.clear();
+                }
+            });
+        });
         egui::ScrollArea::vertical()
-            .max_height(140.0)
+            .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                egui::Grid::new("console").num_columns(1).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                egui::Grid::new("console-lines").num_columns(1).show(ui, |ui| {
                     for line in &self.console {
                         ui.monospace(egui::RichText::new(line).small());
                         ui.end_row();

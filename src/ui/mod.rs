@@ -18,6 +18,7 @@ pub const ORANGE: egui::Color32 = egui::Color32::from_rgb(0xeb, 0x68, 0x34);
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(0x89, 0x87, 0x81);
 pub const INK2: egui::Color32 = egui::Color32::from_rgb(0x52, 0x51, 0x4e);
 pub const RED: egui::Color32 = egui::Color32::from_rgb(0xd0, 0x3b, 0x3b);
+pub const GREEN: egui::Color32 = egui::Color32::from_rgb(0x0c, 0xa3, 0x0c);
 
 /// One point of chart history.
 pub struct Sample {
@@ -450,6 +451,10 @@ impl eframe::App for CryoApp {
             .default_size(300.0)
             .min_size(220.0)
             .show(ui, |ui| self.live_panel(ui));
+        // console pinned to the bottom, spanning the full window width
+        egui::Panel::bottom("console")
+            .exact_size(150.0)
+            .show(ui, |ui| self.console_panel(ui));
         // the central column is one scrolling page: each section keeps its
         // natural height instead of fighting for a slice of the window
         egui::CentralPanel::default().show(ui, |ui| {
