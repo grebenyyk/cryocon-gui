@@ -82,16 +82,6 @@ impl CryoApp {
                 });
             ui.end_row();
         });
-        ui.label(
-            egui::RichText::new("for experiments: RampP (smooth glide at the ramp rate)")
-                .small()
-                .color(MUTED),
-        )
-        .on_hover_text(
-            "RampP approaches the setpoint at LOOP 1:RATE (K/min). Note: on the \
-             reference instrument the firmware executes ~0.84x the commanded \
-             rate — measure once, then compensate.",
-        );
         if ui.button("apply").clicked() {
             if let Ok(v) = self.manual_setpoint.trim().parse::<f64>() {
                 self.do_set(1, v, Some(TYPES[self.manual_type].to_string()), false);

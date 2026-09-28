@@ -81,12 +81,13 @@ impl CryoApp {
                     if run.clicked() {
                         self.start_schedule(false);
                     }
-                    if ui.button("dry run").clicked() {
-                        self.start_schedule(true);
-                    }
                 });
                 ui.add_enabled_ui(running, |ui| {
-                    let b = ui.button(egui::RichText::new("abort").color(RED));
+                    // same size as 'run', so the button doesn't jump around
+                    let b = ui.add_sized(
+                        [96.0, 26.0],
+                        egui::Button::new(egui::RichText::new("abort").color(RED)),
+                    );
                     if b.clicked() {
                         if let Some(r) = &self.runner {
                             r.abort
@@ -94,13 +95,6 @@ impl CryoApp {
                         }
                     }
                 });
-                ui.label(
-                    egui::RichText::new(
-                        "dry run touches nothing — it only prints the steps",
-                    )
-                    .small()
-                    .color(MUTED),
-                );
             });
         }); // <- editor + controls row
     }
@@ -146,8 +140,7 @@ impl CryoApp {
             return;
         }
         if !dry_run && self.link.is_none() {
-            self.console_push("ERROR: not connected (dry run still works)"
-                .into());
+            self.console_push("ERROR: not connected".into());
             return;
         }
         let req_tx = match &self.link {
