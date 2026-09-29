@@ -47,10 +47,11 @@ cargo run --release          # native target
 
 Command syntax and instrument facts came from three kinds of sources:
 
-- **Cryo-con official documentation** — Model 22C brochure and User's Guide
-  (control modes, ramp = rate + target setpoint, command scripts), and the
-  AB015 *Remote Programming Guide* (the LOOP-command language, common to all
-  Cryo-con instruments).
+- **Cryo-con official documentation** (copies in [`docs/`](docs/)):
+  the [Model 22C brochure](docs/model-22c-brochure.pdf) (control modes,
+  ramp = rate + target setpoint, command scripts) and the
+  [AB015 *Remote Programming Guide*](docs/ab015-remote-programming-guide.pdf)
+  (the SCPI/LOOP-command language, common to all Cryo-con instruments).
 - **[bicarlsen/cryocon-22c-controller](https://github.com/bicarlsen/cryocon-22c-controller)**
   — an existing Python/easy-scpi driver for the 22C; its source was read to
   confirm the exact command spellings and the `\r\n` line protocol used here.
