@@ -48,8 +48,10 @@ cargo run --release          # native target
 Command syntax and instrument facts came from three kinds of sources:
 
 - **Cryo-con official documentation** (copies in [`docs/`](docs/)):
-  the [Model 22C brochure](docs/model-22c-brochure.pdf) (control modes,
-  ramp = rate + target setpoint, command scripts) and the
+  the [Model 22C User's Guide](docs/model-22c-users-guide.pdf) (the full
+  manual: front-panel menus, control types, temperature ramping, remote
+  command summary), the [Model 22C brochure](docs/model-22c-brochure.pdf),
+  and the
   [AB015 *Remote Programming Guide*](docs/ab015-remote-programming-guide.pdf)
   (the SCPI/LOOP-command language, common to all Cryo-con instruments).
 - **[bicarlsen/cryocon-22c-controller](https://github.com/bicarlsen/cryocon-22c-controller)**
