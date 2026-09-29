@@ -41,9 +41,11 @@ PLIST
 cat > "$STAGE/README.txt" <<'NOTE'
 cryocon-gui — GUI for the Cryo-con Model 22C temperature controller
 
-First launch (the app is not signed with an Apple Developer ID):
-  right-click cryocon-gui.app -> Open -> Open.
-  macOS only asks once; after that it opens normally.
+First launch (the app is not signed with an Apple Developer ID), either:
+  right-click cryocon-gui.app -> Open -> Open (macOS asks once),
+or remove the quarantine flag in Terminal:
+  xattr -dr com.apple.quarantine /Applications/cryocon-gui.app
+(only for software you trust; adjust the path if it lives elsewhere)
 
 Connect to the instrument at 192.168.1.5 port 5000 (default), or to the
 offline simulator at 127.0.0.1 port 15000 (run mock_cryocon.py first).

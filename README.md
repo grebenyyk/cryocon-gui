@@ -20,7 +20,24 @@ instrument); works against the real controller unchanged.
 ```sh
 cargo run --release          # native target
 ./build-universal.sh         # universal (arm64 + x86_64) binary in dist/
+./package-dmg.sh             # .app bundle in a DMG (dist/*-universal.dmg)
 ```
+
+## First launch from the DMG
+
+The app is not signed with an Apple Developer ID, so Gatekeeper will
+complain on first open. Either:
+
+- right-click `cryocon-gui.app` → **Open** → **Open** (once per user), or
+- remove the quarantine flag in Terminal:
+
+  ```sh
+  xattr -dr com.apple.quarantine /Applications/cryocon-gui.app
+  ```
+
+  (adjust the path if the app lives elsewhere). This tells macOS to trust
+  the app without asking — only do it for software you trust, e.g. builds
+  you made yourself or took from this project's releases.
 
 ## Safety notes
 
