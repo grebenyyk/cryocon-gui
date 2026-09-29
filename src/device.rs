@@ -68,6 +68,10 @@ pub struct Snapshot {
     pub setpoint_1: Option<f64>,
     pub rate_1: Option<f64>,
     pub power_1: Option<f64>,
+    /// Loop-control state as the *instrument* reports it (CONTROL? query,
+    /// documented in AB015). None = query not answered (older firmware);
+    /// the app falls back to tracking its own commands in that case.
+    pub control_on: Option<bool>,
     pub when: Instant,
 }
 
@@ -79,6 +83,7 @@ impl Default for Snapshot {
             setpoint_1: None,
             rate_1: None,
             power_1: None,
+            control_on: None,
             when: Instant::now(), // Instant has no Default; "now" is the sensible start
         }
     }
@@ -124,6 +129,15 @@ pub fn parse_number(s: &str) -> Option<f64> {
 /// The instrument's negative acknowledgement for unknown commands.
 pub fn is_nak(s: &str) -> bool {
     s.trim().eq_ignore_ascii_case("nak")
+}
+
+/// Parse a CONTROL? answer ("ON" / "OFF", upper-case per the docs).
+pub fn parse_on_off(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_uppercase().as_str() {
+        "ON" => Some(true),
+        "OFF" => Some(false),
+        _ => None, // includes NAK from firmware without the query
+    }
 }
 
 // --------------------------------------------------------------------------
@@ -302,12 +316,19 @@ impl Connection {
         let setpoint_1 = parse_number(&self.query("LOOP 1:SETP?").ok()?);
         let rate_1 = parse_number(&self.query("LOOP 1:RATE?").ok()?);
         let power_1 = parse_number(&self.query("LOOP 1:OUTPWR?").ok()?);
+        // CONTROL? is a documented query; if the firmware NAKs it we simply
+        // get None and the app keeps its own bookkeeping
+        let control_on = self
+            .query("CONTROL?")
+            .ok()
+            .and_then(|s| parse_on_off(&s));
         Some(Snapshot {
             t_a,
             t_b,
             setpoint_1,
             rate_1,
             power_1,
+            control_on,
             when: Instant::now(),
         })
     }
@@ -394,5 +415,13 @@ mod tests {
         assert!(is_nak("NAK"));
         assert!(is_nak(" nak "));
         assert!(!is_nak("299.0"));
+    }
+
+    #[test]
+    fn control_state_parsing() {
+        assert_eq!(parse_on_off("ON"), Some(true));
+        assert_eq!(parse_on_off(" off "), Some(false));
+        assert_eq!(parse_on_off("NAK"), None); // firmware without the query
+        assert_eq!(parse_on_off(""), None);
     }
 }

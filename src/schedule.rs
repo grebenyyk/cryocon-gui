@@ -141,7 +141,7 @@ impl NoneOrValid for Option<&&str> {
             None => true,
             Some(s) => matches!(
                 s.to_ascii_lowercase().as_str(),
-                "pid" | "rampp" | "rampt" | "man" | "off" | "table"
+                "pid" | "rampp" | "rampt" | "man" | "off" | "table" | "scale"
             ),
         }
     }
@@ -428,5 +428,6 @@ mod tests {
     fn set_type_must_be_from_the_known_set() {
         assert!(parse("set 1 100 PIDLE").is_err());
         assert!(parse("set 1 100 RamPP").is_ok()); // case-insensitive type
+        assert!(parse("set 3 100 SCALE").is_ok()); // manual lists it (loops 3-4)
     }
 }

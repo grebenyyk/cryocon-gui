@@ -25,6 +25,7 @@ and the same CSV log format, so they stay interchangeable:
 | `mock_cryocon.py` | offline simulator of the 22C (web + command port) — run it, then connect the GUI to `127.0.0.1:15000` |
 | `plot_ramp.py` | plot temperature vs time from any cryocon CSV log (safe on a file still being written) |
 | `match_temps.py` | assign interpolated temperatures to spectra by timestamp (joins a cryocon log with a spectra manifest CSV) |
+| `probe_cryocon.sh` | read-only first-contact checklist: pages, command port, control/OTD/line-freq/max-setpoint queries (`./probe_cryocon.sh [host] [tcp-port]`) |
 
 ## First launch from the DMG
 

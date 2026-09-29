@@ -87,7 +87,7 @@ pub struct CryoApp {
     pub manual_type: usize, // index into TYPES
 }
 
-pub const TYPES: [&str; 6] = ["PID", "RampP", "RampT", "Man", "Off", "Table"];
+pub const TYPES: [&str; 7] = ["PID", "RampP", "RampT", "Man", "Off", "Table", "SCALE"];
 
 /// Staged confirmation for a manual set (see `CryoApp::pending_set`).
 #[derive(Clone, Debug)]
@@ -363,6 +363,11 @@ impl CryoApp {
                     self.console_push(format!("connection lost ({reason}); retrying"));
                 }
                 Ok(DeviceEvent::Snapshot(s)) => {
+                    // the instrument's own CONTROL? answer wins over our
+                    // bookkeeping whenever the firmware provides one
+                    if let Some(on) = s.control_on {
+                        self.control_on = Some(on);
+                    }
                     self.snap = s.clone();
                     let t_min = self.t0.elapsed().as_secs_f64() / 60.0;
                     self.history.push(Sample {

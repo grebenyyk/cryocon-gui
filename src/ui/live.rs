@@ -5,18 +5,23 @@ use super::{CryoApp, BLUE, GREEN, INK2, MUTED, ORANGE, RED, TYPES};
 use egui_plot::{Legend, Line, Plot};
 
 /// One line of help per loop type (hover the dropdown entries).
-const TYPE_HELP: [&str; 6] = [
+/// Wording per the Model 22C User's Guide (control types table).
+const TYPE_HELP: [&str; 7] = [
     "PID — classic feedback: drive straight to the setpoint as fast as the \
      tuned PID allows (a step change).",
-    "RampP — glide to the setpoint at the loop's ramp rate (K/min, the \
-     'rate' schedule command). The gentle option for real samples.",
-    "RampT — reach the setpoint over a fixed time period; the period is a \
-     separate loop setting (front panel / command port, not exposed here).",
+    "RampP — temperature ramp mode: glide to the setpoint at the loop's ramp \
+     rate (K/min, the 'rate' schedule command). The gentle option for real \
+     samples.",
+    "RampT — temperature ramp mode that pulls its tuning parameters from the \
+     stored PID tables as the ramp progresses. Use only if you maintain \
+     PID tables.",
     "Man — manual heater power: the setpoint field is ignored and the loop \
      outputs a fixed percentage (the 'Pmanual' setting). For heater tests.",
     "Off — loop disabled, no heating at all.",
-    "Table — follow a setpoint/PID table stored in the instrument (not \
-     editable from this app).",
+    "Table — controlled by PID-table lookup (table chosen via 'PID Table \
+     index'; not editable from this app).",
+    "SCALE — output voltage scales with input temperature. Loops 3 and 4 \
+     (analog outputs) only; not valid for the heater loops.",
 ];
 
 impl CryoApp {
