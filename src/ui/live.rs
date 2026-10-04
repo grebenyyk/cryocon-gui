@@ -2,6 +2,7 @@
 //! settings; and the two central charts (temperature, heater power).
 
 use super::{CryoApp, BLUE, GREEN, INK2, MUTED, ORANGE, RED, TYPES};
+use super::rate_gate::PendingRun;
 use egui_plot::{Legend, Line, Plot};
 
 /// One line of help per loop type (hover the dropdown entries).
@@ -99,6 +100,13 @@ impl CryoApp {
         ui.separator();
         ui.add_space(6.0);
 
+        // ---- quick ramps ------------------------------------------------
+        self.quick_ramp_panels(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
         // ---- safety settings ------------------------------------------
         ui.heading("safety");
         egui::Grid::new("safety").num_columns(2).show(ui, |ui| {
@@ -116,6 +124,123 @@ impl CryoApp {
             "the over-temperature disconnect is switched off — that is why \
              the default max setpoint equals its threshold",
         );
+    }
+
+    /// The two quick-ramp panels under 'set setpoint': the same
+    /// rate + set + RampP that the schedule grammar spells out, entered as
+    /// two numbers instead of a script. 'in time' derives the rate from
+    /// the current temperature; 'at rate' takes the rate as given.
+    fn quick_ramp_panels(&mut self, ui: &mut egui::Ui) {
+        let running = self.runner.is_some();
+
+        // ---- panel 1: reach the target within a given time -------------
+        ui.heading("go to · in time");
+        egui::Grid::new("quick-time").num_columns(2).show(ui, |ui| {
+            ui.label("target, K");
+            ui.text_edit_singleline(&mut self.quick_target_time);
+            ui.end_row();
+            ui.label("in, min");
+            ui.text_edit_singleline(&mut self.quick_time_min);
+            ui.end_row();
+        });
+        // live preview of the rate that would be commanded
+        let derived = self.derived_rate();
+        ui.label(
+            egui::RichText::new(match &derived {
+                Ok(rate) => format!("rate ≈ {rate:.2} K/min"),
+                Err(why) => why.clone(),
+            })
+            .small()
+            .color(MUTED),
+        )
+        .on_hover_text(
+            "rate = |target − current temperature A| / time — updated live \
+             from the latest reading",
+        );
+        ui.add_enabled_ui(!running, |ui| {
+            if go_button(ui).clicked() {
+                match (self.quick_target_time.trim().parse::<f64>(), derived) {
+                    (Ok(target), Ok(rate)) => self.launch_quick_ramp(rate, target),
+                    (Ok(_), Err(why)) => self.console_push(format!("ERROR: {why}")),
+                    _ => self.console_push("ERROR: target is not a number".into()),
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text("a schedule is running — abort it first");
+
+        ui.add_space(8.0);
+
+        // ---- panel 2: reach the target at a given rate ------------------
+        ui.heading("go to · at rate");
+        egui::Grid::new("quick-rate").num_columns(2).show(ui, |ui| {
+            ui.label("target, K");
+            ui.text_edit_singleline(&mut self.quick_target_rate);
+            ui.end_row();
+            ui.label("rate, K/min");
+            ui.text_edit_singleline(&mut self.quick_rate);
+            ui.end_row();
+        });
+        ui.add_enabled_ui(!running, |ui| {
+            if go_button(ui).clicked() {
+                match (
+                    self.quick_target_rate.trim().parse::<f64>(),
+                    self.quick_rate.trim().parse::<f64>(),
+                ) {
+                    (Ok(target), Ok(rate)) if rate > 0.0 => self.launch_quick_ramp(rate, target),
+                    (Ok(_), Ok(rate)) => {
+                        self.console_push(format!("ERROR: rate must be > 0 (got {rate})"))
+                    }
+                    _ => self.console_push("ERROR: target/rate is not a number".into()),
+                }
+            }
+        })
+        .response
+        .on_disabled_hover_text("a schedule is running — abort it first");
+    }
+
+    /// Panel-1 inputs parsed, with the rate derived from the live
+    /// temperature (Err carries the reason, shown in the preview line).
+    fn derived_rate(&self) -> Result<f64, String> {
+        let target: f64 = self
+            .quick_target_time
+            .trim()
+            .parse()
+            .map_err(|_| "target is not a number".to_string())?;
+        let minutes: f64 = self
+            .quick_time_min
+            .trim()
+            .parse()
+            .map_err(|_| "time is not a number".to_string())?;
+        if minutes <= 0.0 {
+            return Err("time must be > 0".into());
+        }
+        let t = self
+            .snap
+            .t_a
+            .ok_or_else(|| "no live temperature yet (channel A)".to_string())?;
+        let delta = (target - t).abs();
+        if delta < 0.5 {
+            return Err("already at the target".into());
+        }
+        Ok(delta / minutes)
+    }
+
+    /// Handle a quick-panel "go": clamp the target, then hand the ramp
+    /// to the rate-calibration gate (which starts it directly for
+    /// cooling legs — only heating at a commanded rate is gated).
+    fn launch_quick_ramp(&mut self, rate: f64, target: f64) {
+        // the same clamp as every other setpoint write
+        let target = if target > self.max_setpoint {
+            self.console_push(format!(
+                "WARNING: {target} clamped to max setpoint {}",
+                self.max_setpoint
+            ));
+            self.max_setpoint
+        } else {
+            target
+        };
+        self.gate_run(PendingRun::Quick { rate, target });
     }
 
     /// The two stacked charts (one quantity per axis — never two scales on
@@ -186,6 +311,18 @@ fn big_tile(ui: &mut egui::Ui, name: &str, v: Option<f64>, unit: &str, color: eg
     });
     ui.label(egui::RichText::new(name).color(MUTED));
     ui.add_space(8.0);
+}
+
+/// The blue action button shared by the two quick-ramp panels — same size
+/// and styling as the schedule section's 'run'.
+fn go_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.add_sized(
+        [96.0, 26.0],
+        egui::Button::new(
+            egui::RichText::new("go").strong().color(egui::Color32::WHITE),
+        )
+        .fill(BLUE),
+    )
 }
 
 fn small_row(ui: &mut egui::Ui, name: &str, v: Option<f64>, unit: &str) {

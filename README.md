@@ -3,16 +3,27 @@
 A macOS GUI for the **Cryo-con**/**PHYSIKE** 22C cryogenic temperature
 controller, speaking its ASCII command protocol over TCP (port 5000).
 
-Features (v1):
+Features:
 - connect / auto-reconnect, live readout (temperature, setpoint, heater power)
-- live charts (T + setpoint; heater power)
+- live charts (T + setpoint; heater power) — all panels drag-resizable
 - schedule editor & runner with the same grammar as `cryocon.sh`
   (`control / stop / set / rate / wait / stable / log`)
+- quick-ramp panels: "go to T in N minutes" (rate derived from the live
+  temperature) and "go to T at R K/min"
+- **live rate calibration**: this unit's firmware ramps at ~0.84× the
+  commanded rate (measured 2026-09-30 at four commanded rates, heater
+  never saturated). Before any run that heats at a commanded rate, the
+  app offers to measure the scale with a short out-and-back leg (probe
+  at 4–12 K/min, span-based slope fit, heater-saturation aware) and
+  divides the planned rates by it, so ramps actually move at the
+  requested K/min. It refuses to calibrate while the temperature is
+  still drifting or control is off; cooling legs are never corrected.
 - CSV logging compatible with the bash toolchain (`match_temps.py`,
-  `plot_ramp.py`)
+  `plot_ramp.py`); schedule runs, quick ramps and calibrations all land
+  in the same log
 
-v1 developed and tested against `mock_cryocon.py`, an offline simulator of the
-instrument.
+Developed and tested against `mock_cryocon.py`, an offline simulator of
+the instrument — including its firmware's ~0.84× rate behavior.
 
 ## Companion scripts (`scripts/`)
 
@@ -22,7 +33,7 @@ and the same CSV log format, so they stay interchangeable:
 | script | purpose |
 |---|---|
 | `cryocon.sh` | headless schedule runner — the GUI's sibling; ideal for overnight runs (`./cryocon.sh schedule.txt`) |
-| `mock_cryocon.py` | offline simulator of the 22C (web + command port) — run it, then connect the GUI to `127.0.0.1:15000` |
+| `mock_cryocon.py` | offline simulator of the 22C (web + command port, RampP ramp engine incl. the ~0.84× firmware quirk) — run it, then connect the GUI to `127.0.0.1:15000` |
 | `plot_ramp.py` | plot temperature vs time from any cryocon CSV log (safe on a file still being written) |
 | `match_temps.py` | assign interpolated temperatures to spectra by timestamp (joins a cryocon log with a spectra manifest CSV) |
 | `probe_cryocon.sh` | read-only first-contact checklist: pages, command port, control/OTD/line-freq/max-setpoint queries (`./probe_cryocon.sh [host] [tcp-port]`) |

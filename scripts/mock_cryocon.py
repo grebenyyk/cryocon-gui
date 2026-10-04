@@ -11,9 +11,12 @@ Emulates the two interfaces of the real instrument:
 Usage:  python3 mock_cryocon.py [http_port [tcp_port]]
         (defaults: 8085 http, 15000 tcp)
 
-The simulated temperature glides toward the setpoint with a ~3 s time
-constant whenever control is ON, so the `stable` schedule command can be
-tested quickly. State changes are printed to the console.
+The simulated temperature chases the setpoint with a ~3 s time constant
+whenever control is ON (passive ~25 s cooling above it), so the `stable`
+schedule command can be tested quickly. RampP/RampT loops ramp properly:
+an internal setpoint advances toward the commanded one at the loop's
+rate K/min and the plant chases that. State changes are printed to the
+console.
 """
 
 import os
@@ -43,6 +46,11 @@ class State:
         self.tau_cool = 25.0  # s, passive LN2 cooling (above setpoint) —
                               #    slower than heating, like a real cryostat
         self.tau_off = 60.0   # s, drift back to ambient when stopped
+        # our real 22C (fw 3.39F) advances ramps at ~0.84x the commanded
+        # rate — measured 2026-09-30 at four commanded rates with the
+        # heater never saturated; the mock reproduces the quirk so
+        # rate-sensitive features can be tested against it too
+        self.fw_rate_scale = 0.84
         self.loops = {
             1: {"setpt": 298.0, "type": "PID",   "source": "CHA", "range": "HI",
                 "p": 20.0, "i": 30.0, "d": 0.0, "pman": 5.0, "rate": 25.0},
@@ -53,6 +61,10 @@ class State:
             4: {"setpt": 100.0, "type": "Off",   "source": "CHB", "range": "5V",
                 "p": 1.0,  "i": 5.0,  "d": 0.0, "pman": 5.0, "rate": 25.0},
         }
+        # internal (ramp) setpoint per loop: RampP/RampT loops glide this
+        # toward 'setpt' at 'rate' K/min; the plant chases it
+        for lp in self.loops.values():
+            lp["int_sp"] = self.channels[lp["source"][-1]]
 
     def _thermal_point(self, ch):
         """(target_K, tau_s) for a channel.
@@ -69,12 +81,30 @@ class State:
             for n in (1, 2, 3, 4):
                 lp = self.loops[n]
                 if lp["type"] != "Off" and lp["source"] == "CH" + ch:
-                    if t < lp["setpt"]:
-                        return lp["setpt"], self.tau_on   # heating
-                    return lp["setpt"], self.tau_cool     # passive cooling
+                    # a ramping loop drives the plant toward its INTERNAL
+                    # setpoint (the glide), not the final commanded one
+                    sp = lp["int_sp"] if lp["type"] in ("RAMPP", "RAMPT") \
+                        else lp["setpt"]
+                    if t < sp:
+                        return sp, self.tau_on   # heating
+                    return sp, self.tau_cool     # passive cooling
             return self.ambient, self.tau_off
 
     def tick(self, dt):
+        # ramp engine: advance the internal setpoints of active RampP/T
+        # loops at the loop's rate (times the firmware's rate scale)
+        with self.lock:
+            for lp in self.loops.values():
+                if not self.control or lp["type"] not in ("RAMPP", "RAMPT"):
+                    continue
+                dest = lp["setpt"]
+                step = lp["rate"] * self.fw_rate_scale * (dt / 60.0)
+                if abs(dest - lp["int_sp"]) <= step:
+                    lp["int_sp"] = dest
+                elif dest > lp["int_sp"]:
+                    lp["int_sp"] += step
+                else:
+                    lp["int_sp"] -= step
         for ch in ("A", "B"):
             target, tau = self._thermal_point(ch)
             with self.lock:
@@ -94,7 +124,9 @@ class State:
                 return 0
             src = lp["source"][-1]
             t = self.channels[src]
-            err = lp["setpt"] - t
+            # heater chases the effective (internal, if ramping) setpoint
+            sp = lp["int_sp"] if lp["type"] in ("RAMPP", "RAMPT") else lp["setpt"]
+            err = sp - t
             # power needed to hold temperature against the cooling system
             hold = min(80.0, max(0.0, 0.4 * (t - 100.0)))
             if err > 0.05:                      # below setpoint: heat
@@ -356,6 +388,8 @@ def handle_command(line):
                 return fmt_setpt(lp["setpt"])
             try:
                 lp["setpt"] = float(re.sub(r"[^0-9.eE+-]", "", arg) or 0)
+                # a fresh setpoint restarts the ramp from where we are
+                lp["int_sp"] = STATE.channels[lp["source"][-1]]
                 print("[state] loop %d setpoint -> %.3f" % (n, lp["setpt"]))
             except ValueError:
                 pass

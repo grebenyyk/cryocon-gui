@@ -1,6 +1,7 @@
 //! Schedule editor, run controls, and the console pane.
 
 use super::{CryoApp, BLUE, GREEN, RED};
+use super::rate_gate::PendingRun;
 use crate::schedule;
 
 impl CryoApp {
@@ -84,7 +85,7 @@ impl CryoApp {
                             .fill(BLUE),
                         );
                         if run.clicked() {
-                            self.start_schedule(false);
+                            self.try_run_schedule();
                         }
                     });
                     ui.add_enabled_ui(running, |ui| {
@@ -147,7 +148,10 @@ impl CryoApp {
             });
     }
 
-    fn start_schedule(&mut self, dry_run: bool) {
+    /// Real run: parse, then through the rate-calibration gate — which
+    /// starts it immediately when nothing needs calibrating (cooling
+    /// ramps, rate-free schedules).
+    pub fn try_run_schedule(&mut self) {
         let steps = match schedule::parse(&self.schedule_text) {
             Ok(s) => s,
             Err(_) => {
@@ -160,31 +164,30 @@ impl CryoApp {
             self.console_push("ERROR: schedule is empty".into());
             return;
         }
-        if !dry_run && self.link.is_none() {
-            self.console_push("ERROR: not connected".into());
-            return;
-        }
+        self.gate_run(PendingRun::Schedule { steps });
+    }
+
+    /// Shared runner start for real runs — the schedule editor and the
+    /// quick-ramp panels both funnel through here, so abort, console and
+    /// CSV logging behave identically. Returns false (with a console
+    /// ERROR) when there is no connection.
+    pub fn start_steps(&mut self, steps: Vec<schedule::Step>) -> bool {
         let req_tx = match &self.link {
             Some(link) => link.req_tx.clone(),
             None => {
-                // dry run without a link: give the runner a dead channel
-                let (tx, _rx) = std::sync::mpsc::channel();
-                tx
+                self.console_push("ERROR: not connected".into());
+                return false;
             }
         };
         let (prog_tx, prog_rx) = std::sync::mpsc::channel();
         self.runner = Some(schedule::spawn(
             steps,
-            dry_run,
+            false,
             req_tx,
             prog_tx,
             self.max_setpoint,
         ));
         self.prog_rx = Some(prog_rx);
-        self.console_push(if dry_run {
-            "dry run starting".into()
-        } else {
-            "schedule starting".into()
-        });
+        true
     }
 }

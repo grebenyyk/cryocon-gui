@@ -3,7 +3,10 @@
 //! [`schedule_ui`]) as extra `impl CryoApp` blocks.
 
 pub mod live;
+pub mod rate_gate;
 pub mod schedule_ui;
+
+use rate_gate::RateGate;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -66,6 +69,13 @@ pub struct CryoApp {
     pub prog_rx: Option<Receiver<Progress>>,
     pub console: Vec<String>,
 
+    /// Rate-calibration gate: set while a rate-bearing run waits for the
+    /// user's choice or while the calibration leg is in flight
+    /// (see `rate_gate.rs`).
+    pub rate_gate: Option<RateGate>,
+    /// Last successful calibration: (scale, K where measured, when).
+    pub last_calib: Option<(f64, f64, std::time::Instant)>,
+
     // safety
     pub max_setpoint: f64,
     pub jump_confirm_k: f64,
@@ -85,6 +95,12 @@ pub struct CryoApp {
     // manual set controls
     pub manual_setpoint: String,
     pub manual_type: usize, // index into TYPES
+
+    // quick ramp panels (left pane, under 'set setpoint')
+    pub quick_target_time: String,
+    pub quick_time_min: String,
+    pub quick_target_rate: String,
+    pub quick_rate: String,
 }
 
 pub const TYPES: [&str; 7] = ["PID", "RampP", "RampT", "Man", "Off", "Table", "SCALE"];
@@ -115,6 +131,8 @@ impl CryoApp {
             runner: None,
             prog_rx: None,
             console: vec!["welcome — connect to the instrument or the mock".into()],
+            rate_gate: None,
+            last_calib: None,
             max_setpoint: 300.0,
             jump_confirm_k: 10.0,
             pending_set: None,
@@ -122,6 +140,10 @@ impl CryoApp {
             control_on: None,
             manual_setpoint: "298".into(),
             manual_type: 0,
+            quick_target_time: "298".into(),
+            quick_time_min: "30".into(),
+            quick_target_rate: "298".into(),
+            quick_rate: "6".into(),
         }
     }
 
@@ -203,6 +225,19 @@ impl CryoApp {
         });
         if ok {
             self.csv_row(&event);
+            // turning control on with a far-away stored setpoint means
+            // "drive there NOW" — say so before the chart does
+            if on {
+                if let (Some(t), Some(sp)) = (self.snap.t_a, self.snap.setpoint_1) {
+                    if (t - sp).abs() > 5.0 {
+                        self.console_push(format!(
+                            "note: driving toward the stored setpoint {sp:.1} K \
+                             ({:+.1} K from {t:.1} K)",
+                            sp - t
+                        ));
+                    }
+                }
+            }
         }
     }
 
@@ -213,6 +248,14 @@ impl CryoApp {
         if let Some(r) = &self.runner {
             r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
             parts.push("schedule aborted".into());
+        }
+        // an in-flight calibration leg is also a thing that heats
+        if let Some(RateGate::Running { abort, .. }) = &self.rate_gate {
+            abort.store(true, std::sync::atomic::Ordering::Relaxed);
+            parts.push("calibration aborted".into());
+        }
+        if self.rate_gate.is_some() {
+            self.rate_gate = None; // pending popups close with it
         }
         if self.link.is_some() {
             let _ = self.ask(DeviceCmd::Stop);
@@ -595,6 +638,9 @@ impl eframe::App for CryoApp {
             }
             None => {}
         }
+
+        // rate-calibration popup (gates any run that heats at a rate)
+        self.rate_gate_ui(&ctx);
     }
 }
 
