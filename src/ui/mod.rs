@@ -486,6 +486,26 @@ fn dirs_documents() -> PathBuf {
 }
 
 impl eframe::App for CryoApp {
+    // Called by eframe while the event loop is still alive, right before
+    // the window/renderer teardown. On this macOS version that teardown
+    // aborts inside AppKit (an NSTouchBar display-flush observer throws
+    // after the window closes — see the crash reports), which macOS then
+    // reports as "quit unexpectedly". Exiting here, before any of that
+    // runs, is a clean quit: nothing is lost (CSV rows are flushed as
+    // they are written) and the heaters' state is the instrument's own.
+    fn on_exit(&mut self) {
+        // stop anything this app is driving, then leave without handing
+        // control back to the crashing teardown
+        if let Some(r) = &self.runner {
+            r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(RateGate::Running { abort, .. }) = &self.rate_gate {
+            abort.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        self.csv = None; // close + flush the session log
+        std::process::exit(0);
+    }
+
     // eframe 0.36 hands the app a root Ui instead of a bare Context
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
