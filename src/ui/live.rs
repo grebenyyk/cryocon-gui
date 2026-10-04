@@ -147,11 +147,12 @@ impl CryoApp {
             .filter_map(|s| s.power.map(|v| [s.t_min, v]))
             .collect();
 
-        // fixed, generous heights: the whole central column scrolls, so the
-        // plots no longer squeeze into whatever space the schedule left
+        // the plots share the charts panel's height (temperature gets the
+        // larger share), so dragging the panel's bottom edge resizes both
+        let avail = ui.available_height();
         Plot::new("temperature")
             .legend(Legend::default())
-            .height(280.0)
+            .height((avail * 0.55).max(130.0))
             .x_axis_label("elapsed, min")
             .y_axis_label("K")
             .show(ui, |p| {
@@ -164,7 +165,7 @@ impl CryoApp {
             });
         Plot::new("power")
             .legend(Legend::default())
-            .height(220.0)
+            .height(ui.available_height().max(100.0))
             .x_axis_label("elapsed, min")
             .y_axis_label("%")
             .show(ui, |p| {

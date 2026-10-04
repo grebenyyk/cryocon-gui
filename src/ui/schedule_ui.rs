@@ -8,8 +8,8 @@ impl CryoApp {
         ui.heading("schedule");
         ui.add_space(4.0);
 
-        // NB: the whole central column is one scrolling page (see mod.rs),
-        // so this section just takes its natural height.
+        // NB: this section lives in its own scrolling panel (see mod.rs),
+        // so it just takes its natural height.
         ui.horizontal(|ui| {
             // ---- editor (left) --------------------------------------
             ui.vertical(|ui| {
@@ -99,13 +99,11 @@ impl CryoApp {
         }); // <- editor + controls row
     }
 
-    /// Console: pinned bottom panel spanning the full window width, so its
-    /// scrollbar sits at the window edge instead of floating mid-screen.
+    /// Console: resizable bottom panel (its top edge is the drag handle).
+    /// Heading styled the same as "charts" and "schedule".
     pub fn console_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("console").strong().color(super::INK2),
-            );
+            ui.heading("console");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("clear").clicked() {
                     self.console.clear();

@@ -451,24 +451,34 @@ impl eframe::App for CryoApp {
 
         self.top_bar(ui);
         self.banner(ui);
-        // egui 0.36 merged Side/TopBottom panels into one `Panel` type
+        // egui 0.36 merged Side/TopBottom panels into one `Panel` type.
+        // Four regions, three drag handles:
+        //   left   — live panel (its right edge is draggable, as before)
+        //   top    — charts   (resizable: handle on its bottom edge)
+        //   middle — schedule (fills whatever the neighbours leave it)
+        //   bottom — console  (resizable: handle on its top edge)
+        // so both boundaries around the schedule drag exactly like the
+        // live panel's divider.
         egui::Panel::left("live")
             .default_size(300.0)
             .min_size(220.0)
             .show(ui, |ui| self.live_panel(ui));
-        // console pinned to the bottom, spanning the full window width
+        egui::Panel::top("charts")
+            .resizable(true) // side panels default to resizable; top/bottom don't
+            .default_size(560.0)
+            .min_size(320.0)
+            .show(ui, |ui| self.charts(ui));
         egui::Panel::bottom("console")
-            .exact_size(150.0)
+            .resizable(true)
+            .default_size(170.0)
+            .min_size(90.0)
             .show(ui, |ui| self.console_panel(ui));
-        // the central column is one scrolling page: each section keeps its
-        // natural height instead of fighting for a slice of the window
+        // the schedule keeps the middle strip and scrolls on its own
         egui::CentralPanel::default().show(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width());
-                    self.charts(ui);
-                    ui.add_space(6.0);
                     self.schedule_section(ui);
                 });
         });
