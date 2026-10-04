@@ -1,6 +1,6 @@
 //! Schedule editor, run controls, and the console pane.
 
-use super::{CryoApp, RED};
+use super::{CryoApp, BLUE, GREEN, RED};
 use crate::schedule;
 
 impl CryoApp {
@@ -8,23 +8,29 @@ impl CryoApp {
         ui.heading("schedule");
         ui.add_space(4.0);
 
-        // NB: this section lives in its own scrolling panel (see mod.rs),
-        // so it just takes its natural height.
-        ui.horizontal(|ui| {
-            // ---- editor (left) --------------------------------------
-            ui.vertical(|ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.schedule_text)
-                        .code_editor()
-                        .desired_rows(8)
-                        .desired_width(ui.available_width() * 0.7),
-                );
-                // validation: show every bad line, live
-                match schedule::parse(&self.schedule_text) {
+        // Validate up front: the bottom strip (status lines + the five
+        // buttons) is pinned to the section's bottom edge, so its height
+        // must be known before layout; the editor fills everything above.
+        let parsed = schedule::parse(&self.schedule_text);
+        let n_lines = match &parsed {
+            Ok(_) => 1,
+            Err(errs) => errs.len().min(6) + usize::from(errs.len() > 6),
+        };
+        let line_h = ui.text_style_height(&egui::TextStyle::Body);
+        let gap = ui.spacing().item_spacing.y;
+        //  + button row + panel margins + a little slack (overshoot is
+        //  harmless — content top-aligns; undershoot would clip buttons)
+        let bottom_h = n_lines as f32 * line_h + (n_lines - 1) as f32 * gap + 52.0;
+
+        egui::Panel::bottom("schedule-bottom")
+            .exact_size(bottom_h)
+            .show(ui, |ui| {
+                // live validation (same as it ever was)
+                match &parsed {
                     Ok(steps) => {
                         ui.label(
                             egui::RichText::new(format!("{} steps, valid", steps.len()))
-                                .color(egui::Color32::from_rgb(0x0c, 0xa3, 0x0c)),
+                                .color(GREEN),
                         );
                     }
                     Err(errs) => {
@@ -32,12 +38,17 @@ impl CryoApp {
                             ui.label(egui::RichText::new(msg.clone()).color(RED));
                         }
                         if errs.len() > 6 {
-                            ui.label(egui::RichText::new(format!("… +{} more", errs.len() - 6)).color(RED));
+                            ui.label(
+                                egui::RichText::new(format!("… +{} more", errs.len() - 6))
+                                    .color(RED),
+                            );
                         }
                     }
                 }
+                // one row of five, same height: file actions, then the two
+                // run controls (kept visually grouped by a separator)
                 ui.horizontal(|ui| {
-                    if ui.button("load…").clicked() {
+                    if ui.add(egui::Button::new("load…").min_size([0.0, 26.0].into())).clicked() {
                         if let Some(p) = rfd::FileDialog::new()
                             .add_filter("schedule", &["txt"])
                             .pick_file()
@@ -48,7 +59,7 @@ impl CryoApp {
                             }
                         }
                     }
-                    if ui.button("save…").clicked() {
+                    if ui.add(egui::Button::new("save…").min_size([0.0, 26.0].into())).clicked() {
                         if let Some(p) = rfd::FileDialog::new()
                             .set_file_name("schedule.txt")
                             .save_file()
@@ -56,47 +67,59 @@ impl CryoApp {
                             let _ = std::fs::write(&p, &self.schedule_text);
                         }
                     }
-                    if ui.button("template").clicked() {
+                    if ui.add(egui::Button::new("template").min_size([0.0, 26.0].into())).clicked() {
                         self.schedule_text = schedule::TEMPLATE.into();
                     }
-                });
-            });
-
-            ui.separator();
-
-            // ---- run controls (right) ----------------------------------
-            ui.vertical(|ui| {
-                let running = self.runner.is_some();
-                ui.add_enabled_ui(!running, |ui| {
-                    // the primary action gets the primary styling
-                    let run = ui.add_sized(
-                        [96.0, 26.0],
-                        egui::Button::new(
-                            egui::RichText::new("run")
-                                .strong()
-                                .color(egui::Color32::WHITE),
-                        )
-                        .fill(super::BLUE),
-                    );
-                    if run.clicked() {
-                        self.start_schedule(false);
-                    }
-                });
-                ui.add_enabled_ui(running, |ui| {
-                    // same size as 'run', so the button doesn't jump around
-                    let b = ui.add_sized(
-                        [96.0, 26.0],
-                        egui::Button::new(egui::RichText::new("abort").color(RED)),
-                    );
-                    if b.clicked() {
-                        if let Some(r) = &self.runner {
-                            r.abort
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                    ui.separator();
+                    let running = self.runner.is_some();
+                    ui.add_enabled_ui(!running, |ui| {
+                        // the primary action keeps the primary styling
+                        let run = ui.add_sized(
+                            [96.0, 26.0],
+                            egui::Button::new(
+                                egui::RichText::new("run")
+                                    .strong()
+                                    .color(egui::Color32::WHITE),
+                            )
+                            .fill(BLUE),
+                        );
+                        if run.clicked() {
+                            self.start_schedule(false);
                         }
-                    }
+                    });
+                    ui.add_enabled_ui(running, |ui| {
+                        // same size as 'run', so the row doesn't jump around
+                        let b = ui.add_sized(
+                            [96.0, 26.0],
+                            egui::Button::new(egui::RichText::new("abort").color(RED)),
+                        );
+                        if b.clicked() {
+                            if let Some(r) = &self.runner {
+                                r.abort.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    });
                 });
             });
-        }); // <- editor + controls row
+
+        // The editor mirrors the console's scroll exactly: an outer
+        // ScrollArea carries the content (egui 0.36 text edits grow with
+        // their text and count on the surrounding ScrollArea to scroll),
+        // and min_size stretches the editor frame to the full pane so it
+        // doesn't hug three lines and leave an awkward gap below. The
+        // code-editor tint keeps input visually distinct from console
+        // output.
+        let pane_h = ui.available_height().max(80.0);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.schedule_text)
+                        .code_editor()
+                        .desired_width(f32::INFINITY)
+                        .min_size(egui::vec2(0.0, pane_h - 1.0)),
+                );
+            });
     }
 
     /// Console: resizable bottom panel (its top edge is the drag handle).

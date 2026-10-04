@@ -465,7 +465,10 @@ impl eframe::App for CryoApp {
             .show(ui, |ui| self.live_panel(ui));
         egui::Panel::top("charts")
             .resizable(true) // side panels default to resizable; top/bottom don't
-            .default_size(560.0)
+            // defaults sized so the schedule has a strip of its own in the
+            // 1200x800 default window: ~40 (top bar) + 365 + 170 ≈ 575,
+            // leaving ~225 for the schedule
+            .default_size(365.0)
             .min_size(320.0)
             .show(ui, |ui| self.charts(ui));
         egui::Panel::bottom("console")
@@ -473,14 +476,11 @@ impl eframe::App for CryoApp {
             .default_size(170.0)
             .min_size(90.0)
             .show(ui, |ui| self.console_panel(ui));
-        // the schedule keeps the middle strip and scrolls on its own
+        // the schedule keeps the middle strip: the editor fills it and
+        // scrolls internally; validation + buttons pin to its bottom edge
+        // (laid out inside schedule_ui.rs)
         egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width());
-                    self.schedule_section(ui);
-                });
+            self.schedule_section(ui);
         });
 
         // keep the UI fresh while anything is running
