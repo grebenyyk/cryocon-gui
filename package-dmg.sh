@@ -13,7 +13,9 @@ DMG="dist/cryocon-gui-${VERSION}-universal.dmg"
 ./build-universal.sh
 
 rm -rf "$STAGE"
-mkdir -p "$STAGE/$APP/Contents/MacOS"
+mkdir -p "$STAGE/$APP/Contents/MacOS" "$STAGE/$APP/Contents/Resources"
+
+cp assets/AppIcon.icns "$STAGE/$APP/Contents/Resources/AppIcon.icns"
 
 cp dist/cryocon-gui "$STAGE/$APP/Contents/MacOS/cryocon-gui"
 chmod +x "$STAGE/$APP/Contents/MacOS/cryocon-gui"
@@ -28,6 +30,8 @@ cat > "$STAGE/$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleDisplayName</key>       <string>cryocon-gui</string>
     <key>CFBundleIdentifier</key>        <string>io.github.grebenyyk.cryocon-gui</string>
     <key>CFBundleExecutable</key>        <string>cryocon-gui</string>
+    <key>CFBundleIconFile</key>          <string>AppIcon</string>
+    <key>CFBundleIconName</key>          <string>AppIcon</string>
     <key>CFBundlePackageType</key>       <string>APPL</string>
     <key>CFBundleVersion</key>           <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>

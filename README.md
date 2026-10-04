@@ -26,6 +26,7 @@ and the same CSV log format, so they stay interchangeable:
 | `plot_ramp.py` | plot temperature vs time from any cryocon CSV log (safe on a file still being written) |
 | `match_temps.py` | assign interpolated temperatures to spectra by timestamp (joins a cryocon log with a spectra manifest CSV) |
 | `probe_cryocon.sh` | read-only first-contact checklist: pages, command port, control/OTD/line-freq/max-setpoint queries (`./probe_cryocon.sh [host] [tcp-port]`) |
+| `make_icon.swift` | regenerate the app icon (snowflake + temperature trace, vector CoreGraphics) → `assets/AppIcon.icns` (`swift scripts/make_icon.swift`) |
 
 ## First launch from the DMG
 
