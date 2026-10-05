@@ -400,6 +400,17 @@ impl CryoApp {
                 Ok(DeviceEvent::Connected(idn)) => {
                     self.link_state = LinkState::On { idn: idn.clone() };
                     self.console_push(format!("connected: {idn}"));
+                    // provenance row: a log should record where it came
+                    // from. The mock imitates the real IDN down to the
+                    // serial, so host:port is the decisive part. Commas
+                    // would shift the CSV columns — hence the replace.
+                    let event = format!(
+                        "connected {}:{} {}",
+                        self.host,
+                        self.port,
+                        idn.replace(',', " ")
+                    );
+                    self.csv_row(&event);
                 }
                 Ok(DeviceEvent::Disconnected(reason)) => {
                     self.link_state = LinkState::Connecting;
