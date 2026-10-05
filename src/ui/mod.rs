@@ -23,6 +23,13 @@ pub const INK2: egui::Color32 = egui::Color32::from_rgb(0x52, 0x51, 0x4e);
 pub const RED: egui::Color32 = egui::Color32::from_rgb(0xd0, 0x3b, 0x3b);
 pub const GREEN: egui::Color32 = egui::Color32::from_rgb(0x0c, 0xa3, 0x0c);
 
+/// Plain Return pressed this frame — the dialog-confirm counterpart to
+/// Esc-cancel. Unmodified only, so ⌘Return in the schedule editor keeps
+/// meaning "run" even while a dialog is open.
+pub(crate) fn return_pressed(ui: &mut egui::Ui) -> bool {
+    ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none())
+}
+
 /// One point of chart history.
 pub struct Sample {
     pub t_min: f64,
@@ -569,6 +576,12 @@ impl eframe::App for CryoApp {
                     .collapsible(false)
                     .resizable(false)
                     .show(&ctx, |ui| {
+                        // Esc = cancel, same as the button; Return =
+                        // the primary action, "apply — schedule continues"
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_set = None;
+                        }
+                        let mut proceed = return_pressed(ui);
                         ui.label(format!(
                             "manual setpoint: {} K{}",
                             value,
@@ -587,18 +600,7 @@ impl eframe::App for CryoApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             if ui.button("apply — schedule continues").clicked() {
-                                // clone: the second button below also owns `typ`
-                                self.pending_set = if self.needs_jump_confirm(value) {
-                                    Some(PendingSet::JumpConfirm {
-                                        loop_n,
-                                        value,
-                                        typ: typ.clone(),
-                                        abort_schedule: false,
-                                    })
-                                } else {
-                                    self.do_set(loop_n, value, typ.clone(), true);
-                                    None
-                                };
+                                proceed = true;
                             }
                             if ui
                                 .button(egui::RichText::new("apply & abort schedule").color(RED))
@@ -608,7 +610,7 @@ impl eframe::App for CryoApp {
                                     Some(PendingSet::JumpConfirm {
                                         loop_n,
                                         value,
-                                        typ,
+                                        typ: typ.clone(),
                                         abort_schedule: true,
                                     })
                                 } else {
@@ -616,7 +618,7 @@ impl eframe::App for CryoApp {
                                         r.abort
                                             .store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
-                                    self.do_set(loop_n, value, typ, true);
+                                    self.do_set(loop_n, value, typ.clone(), true);
                                     None
                                 };
                             }
@@ -624,6 +626,20 @@ impl eframe::App for CryoApp {
                                 self.pending_set = None;
                             }
                         });
+                        // shared branch for the button and Return
+                        if proceed {
+                            self.pending_set = if self.needs_jump_confirm(value) {
+                                Some(PendingSet::JumpConfirm {
+                                    loop_n,
+                                    value,
+                                    typ: typ.clone(),
+                                    abort_schedule: false,
+                                })
+                            } else {
+                                self.do_set(loop_n, value, typ.clone(), true);
+                                None
+                            };
+                        }
                     });
             }
             Some(PendingSet::JumpConfirm { loop_n, value, typ, abort_schedule }) => {
@@ -631,6 +647,11 @@ impl eframe::App for CryoApp {
                     .collapsible(false)
                     .resizable(false)
                     .show(&ctx, |ui| {
+                        // Esc = cancel, same as the button; Return = confirm
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            self.pending_set = None;
+                        }
+                        let confirm = return_pressed(ui);
                         let current = self.snap.setpoint_1;
                         ui.label(format!(
                             "setpoint: {} -> {value} K{}",
@@ -651,7 +672,7 @@ impl eframe::App for CryoApp {
                         }
                         ui.separator();
                         ui.horizontal(|ui| {
-                            if ui.button("confirm").clicked() {
+                            if ui.button("confirm").clicked() || confirm {
                                 if abort_schedule {
                                     if let Some(r) = &self.runner {
                                         r.abort

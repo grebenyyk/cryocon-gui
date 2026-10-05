@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
-use super::{CryoApp, BLUE, INK2, MUTED, RED};
+use super::{return_pressed, CryoApp, BLUE, INK2, MUTED, RED};
 use crate::rate_calib::{self, CalibMsg, LegPlan};
 use crate::schedule::Step;
 
@@ -42,6 +42,14 @@ impl CryoApp {
     /// Entry point for every real run (schedule or quick ramp). Decides
     /// whether a heating rate needs calibrating; otherwise starts at once.
     pub fn gate_run(&mut self, run: PendingRun) {
+        // keyboard paths reach this past the disabled buttons, so the
+        // one-run-at-a-time rule is enforced here, at the funnel
+        if self.runner.is_some() {
+            self.console_push(
+                "ERROR: a schedule is already running — abort it first".into(),
+            );
+            return;
+        }
         if self.rate_gate.is_some() {
             self.console_push(
                 "ERROR: a rate decision is already pending — answer the \
@@ -177,6 +185,17 @@ impl CryoApp {
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
+                        // Esc = cancel, same as the button; Return = the
+                        // primary action, "calibrate & run"
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            action = Some(GateAction::Cancel);
+                        }
+                        if return_pressed(ui) {
+                            action = Some(GateAction::Calibrate {
+                                run: run.clone(),
+                                leg: leg.clone(),
+                            });
+                        }
                         ui.label(run_summary(run, leg.t_start));
                         ui.label(
                             egui::RichText::new(
@@ -219,9 +238,11 @@ impl CryoApp {
                             );
                         }
                         ui.separator();
+                        // one size for all four — the primary is told
+                        // apart by its blue fill, not by being bigger
                         ui.horizontal(|ui| {
                             let cal = ui.add_sized(
-                                [150.0, 26.0],
+                                [140.0, 26.0],
                                 egui::Button::new(
                                     egui::RichText::new("calibrate & run")
                                         .strong()
@@ -236,17 +257,29 @@ impl CryoApp {
                                 });
                             }
                             if let Some((scale, _, _)) = last {
-                                if ui.button(format!("use last (x{scale:.3})")).clicked() {
+                                if ui
+                                    .add_sized(
+                                        [140.0, 26.0],
+                                        egui::Button::new(format!("use last (x{scale:.3})")),
+                                    )
+                                    .clicked()
+                                {
                                     action = Some(GateAction::UseLast {
                                         run: run.clone(),
                                         scale,
                                     });
                                 }
                             }
-                            if ui.button("run uncorrected").clicked() {
+                            if ui
+                                .add_sized([140.0, 26.0], egui::Button::new("run uncorrected"))
+                                .clicked()
+                            {
                                 action = Some(GateAction::Uncorrected { run: run.clone() });
                             }
-                            if ui.button("cancel").clicked() {
+                            if ui
+                                .add_sized([140.0, 26.0], egui::Button::new("cancel"))
+                                .clicked()
+                            {
                                 action = Some(GateAction::Cancel);
                             }
                         });
@@ -264,14 +297,29 @@ impl CryoApp {
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
+                        // Esc = cancel, same as the button; Return =
+                        // the primary action, "run uncorrected"
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                            choice = Some(false);
+                        }
+                        if return_pressed(ui) {
+                            choice = Some(true);
+                        }
                         ui.label(summary);
                         ui.label(egui::RichText::new(why).color(RED));
                         ui.separator();
+                        // same uniform button size as the proposal window
                         ui.horizontal(|ui| {
-                            if ui.button("run uncorrected").clicked() {
+                            if ui
+                                .add_sized([140.0, 26.0], egui::Button::new("run uncorrected"))
+                                .clicked()
+                            {
                                 choice = Some(true);
                             }
-                            if ui.button("cancel").clicked() {
+                            if ui
+                                .add_sized([140.0, 26.0], egui::Button::new("cancel"))
+                                .clicked()
+                            {
                                 choice = Some(false);
                             }
                         });
@@ -284,12 +332,18 @@ impl CryoApp {
                     None => {}
                 }
             }
-            Some(RateGate::Running { status, started, abort, .. }) => {
-                let abort = abort.clone();
+            Some(RateGate::Running { status, started, .. }) => {
                 egui::Window::new("rate calibration — running")
                     .collapsible(false)
                     .resizable(false)
                     .show(ctx, |ui| {
+                        // cancel via Esc, Return or the button — and it
+                        // must feel instant: the gate closes NOW, the leg
+                        // thread sees the flag and stops the heaters on
+                        // its next poll
+                        if ui.input(|i| i.key_pressed(egui::Key::Escape)) || return_pressed(ui) {
+                            action = Some(GateAction::Cancel);
+                        }
                         let el = started.elapsed().as_secs();
                         ui.label(format!(
                             "measuring the actual ramp rate ({}:{:02} elapsed)",
@@ -305,11 +359,10 @@ impl CryoApp {
                                 }
                             });
                         if ui
-                            .button(egui::RichText::new("abort calibration").color(RED))
+                            .button(egui::RichText::new("cancel").color(RED))
                             .clicked()
                         {
-                            // an Arc — no `self` mutation needed
-                            abort.store(true, Ordering::Relaxed);
+                            action = Some(GateAction::Cancel);
                         }
                     });
             }
@@ -329,7 +382,19 @@ impl CryoApp {
                 self.rate_gate = None;
                 self.launch_run(run, 1.0);
             }
-            Some(GateAction::Cancel) => self.rate_gate = None,
+            Some(GateAction::Cancel) => {
+                // For the Running gate this is a user cancel: flag the
+                // leg and close the window NOW (the thread's later Done
+                // lands nowhere and the queued run is dropped). For the
+                // other gate states it is a plain dismiss.
+                if let Some(RateGate::Running { abort, .. }) = self.rate_gate.take() {
+                    abort.store(true, Ordering::Relaxed);
+                    self.console_push(
+                        "rate calibration cancelled — stopping heaters".into(),
+                    );
+                    self.csv_row("rate calibration cancelled");
+                }
+            }
             None => {}
         }
     }
@@ -421,8 +486,17 @@ impl CryoApp {
                         self.launch_run(run, scale);
                     }
                     Err(why) => {
-                        self.console_push(format!("rate calibration failed: {why}"));
-                        self.rate_gate = Some(RateGate::Failed { run, why });
+                        if why.starts_with("aborted") {
+                            // user cancelled: no failure dialog, and the
+                            // queued run is NOT started uncorrected
+                            self.console_push(
+                                "rate calibration cancelled — run not started".into(),
+                            );
+                            self.csv_row("rate calibration cancelled");
+                        } else {
+                            self.console_push(format!("rate calibration failed: {why}"));
+                            self.rate_gate = Some(RateGate::Failed { run, why });
+                        }
                     }
                 }
             }
@@ -453,5 +527,69 @@ fn run_summary(run: &PendingRun, t_now: f64) -> String {
                     .unwrap_or_default()
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use egui::{Event, FullOutput, RawInput};
+
+    /// Headless egui frame: nothing to upload textures to, so clear them.
+    fn frame(ctx: &egui::Context, raw: RawInput, mut ui_fn: impl FnMut(&mut egui::Ui)) {
+        let mut out: FullOutput = ctx.run_ui(raw, ui_fn);
+        out.textures_delta.clear();
+    }
+
+    fn esc_input() -> RawInput {
+        let mut raw = RawInput::default();
+        raw.events.push(Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        raw
+    }
+
+    /// Esc pressed must be visible to a Window closure via
+    /// ui.input(key_pressed) — the exact pattern the cancel paths use.
+    /// This pins the framework behavior our dialogs rely on.
+    #[test]
+    fn escape_reaches_window_closures() {
+        let ctx = egui::Context::default();
+        let mut saw_escape = false;
+        frame(&ctx, esc_input(), |ui| {
+            let ctx = ui.ctx().clone();
+            egui::Window::new("w").show(&ctx, |ui| {
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    saw_escape = true;
+                }
+            });
+        });
+        assert!(saw_escape, "Window closure did not see Escape");
+    }
+
+    /// The dialog Esc must fire even while a text field elsewhere holds
+    /// focus (egui windows never steal keyboard focus).
+    #[test]
+    fn escape_visible_even_with_focused_text_edit() {
+        let ctx = egui::Context::default();
+        // frame 1: focus a text edit
+        frame(&ctx, RawInput::default(), |ui| {
+            ui.text_edit_singleline(&mut String::from("x"));
+        });
+        // frame 2: Escape arrives while that edit still has focus
+        let mut saw_escape = false;
+        frame(&ctx, esc_input(), |ui| {
+            ui.text_edit_singleline(&mut String::from("x"));
+            let ctx = ui.ctx().clone();
+            egui::Window::new("w").show(&ctx, |ui| {
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    saw_escape = true;
+                }
+            });
+        });
+        assert!(saw_escape, "Escape lost while a text edit held focus");
     }
 }

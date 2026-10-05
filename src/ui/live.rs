@@ -73,9 +73,12 @@ impl CryoApp {
 
         // ---- manual setpoint ------------------------------------------
         ui.heading("set setpoint");
+        // a dialog window up = it owns Return; fields must not submit
+        let dialog_open = self.pending_set.is_some() || self.rate_gate.is_some();
+        let mut enter_apply = false;
         egui::Grid::new("manual-set").num_columns(2).show(ui, |ui| {
             ui.label("value, K");
-            ui.text_edit_singleline(&mut self.manual_setpoint);
+            enter_apply = submit(&mut self.manual_setpoint, ui, dialog_open);
             ui.end_row();
             ui.label("type");
             egui::ComboBox::from_id_salt("loop-type")
@@ -88,7 +91,7 @@ impl CryoApp {
                 });
             ui.end_row();
         });
-        if ui.button("apply").clicked() {
+        if ui.button("apply").clicked() || enter_apply {
             if let Ok(v) = self.manual_setpoint.trim().parse::<f64>() {
                 self.do_set(1, v, Some(TYPES[self.manual_type].to_string()), false);
             } else {
@@ -132,15 +135,18 @@ impl CryoApp {
     /// the current temperature; 'at rate' takes the rate as given.
     fn quick_ramp_panels(&mut self, ui: &mut egui::Ui) {
         let running = self.runner.is_some();
+        // a dialog window up = it owns Return; fields must not submit
+        let dialog_open = self.pending_set.is_some() || self.rate_gate.is_some();
 
         // ---- panel 1: reach the target within a given time -------------
         ui.heading("go to · in time");
+        let mut go_time = false;
         egui::Grid::new("quick-time").num_columns(2).show(ui, |ui| {
             ui.label("target, K");
-            ui.text_edit_singleline(&mut self.quick_target_time);
+            go_time |= submit(&mut self.quick_target_time, ui, dialog_open);
             ui.end_row();
             ui.label("in, min");
-            ui.text_edit_singleline(&mut self.quick_time_min);
+            go_time |= submit(&mut self.quick_time_min, ui, dialog_open);
             ui.end_row();
         });
         // live preview of the rate that would be commanded
@@ -158,12 +164,8 @@ impl CryoApp {
              from the latest reading",
         );
         ui.add_enabled_ui(!running, |ui| {
-            if go_button(ui).clicked() {
-                match (self.quick_target_time.trim().parse::<f64>(), derived) {
-                    (Ok(target), Ok(rate)) => self.launch_quick_ramp(rate, target),
-                    (Ok(_), Err(why)) => self.console_push(format!("ERROR: {why}")),
-                    _ => self.console_push("ERROR: target is not a number".into()),
-                }
+            if go_button(ui).clicked() || go_time {
+                self.go_in_time();
             }
         })
         .response
@@ -173,30 +175,45 @@ impl CryoApp {
 
         // ---- panel 2: reach the target at a given rate ------------------
         ui.heading("go to · at rate");
+        let mut go_rate = false;
         egui::Grid::new("quick-rate").num_columns(2).show(ui, |ui| {
             ui.label("target, K");
-            ui.text_edit_singleline(&mut self.quick_target_rate);
+            go_rate |= submit(&mut self.quick_target_rate, ui, dialog_open);
             ui.end_row();
             ui.label("rate, K/min");
-            ui.text_edit_singleline(&mut self.quick_rate);
+            go_rate |= submit(&mut self.quick_rate, ui, dialog_open);
             ui.end_row();
         });
         ui.add_enabled_ui(!running, |ui| {
-            if go_button(ui).clicked() {
-                match (
-                    self.quick_target_rate.trim().parse::<f64>(),
-                    self.quick_rate.trim().parse::<f64>(),
-                ) {
-                    (Ok(target), Ok(rate)) if rate > 0.0 => self.launch_quick_ramp(rate, target),
-                    (Ok(_), Ok(rate)) => {
-                        self.console_push(format!("ERROR: rate must be > 0 (got {rate})"))
-                    }
-                    _ => self.console_push("ERROR: target/rate is not a number".into()),
-                }
+            if go_button(ui).clicked() || go_rate {
+                self.go_at_rate();
             }
         })
         .response
         .on_disabled_hover_text("a schedule is running — abort it first");
+    }
+
+    /// 'go to · in time' — the button and the Return key both land here.
+    fn go_in_time(&mut self) {
+        match (self.quick_target_time.trim().parse::<f64>(), self.derived_rate()) {
+            (Ok(target), Ok(rate)) => self.launch_quick_ramp(rate, target),
+            (Ok(_), Err(why)) => self.console_push(format!("ERROR: {why}")),
+            _ => self.console_push("ERROR: target is not a number".into()),
+        }
+    }
+
+    /// 'go to · at rate' — the button and the Return key both land here.
+    fn go_at_rate(&mut self) {
+        match (
+            self.quick_target_rate.trim().parse::<f64>(),
+            self.quick_rate.trim().parse::<f64>(),
+        ) {
+            (Ok(target), Ok(rate)) if rate > 0.0 => self.launch_quick_ramp(rate, target),
+            (Ok(_), Ok(rate)) => {
+                self.console_push(format!("ERROR: rate must be > 0 (got {rate})"))
+            }
+            _ => self.console_push("ERROR: target/rate is not a number".into()),
+        }
     }
 
     /// Panel-1 inputs parsed, with the rate derived from the live
@@ -311,6 +328,15 @@ fn big_tile(ui: &mut egui::Ui, name: &str, v: Option<f64>, unit: &str, color: eg
     });
     ui.label(egui::RichText::new(name).color(MUTED));
     ui.add_space(8.0);
+}
+
+/// A single-line edit that reports being submitted with Return (the idiom
+/// from egui's own docs: a single-line edit surrenders focus on Return).
+/// While a dialog window is up, the dialog owns Return — never submit in
+/// parallel with it.
+fn submit(text: &mut String, ui: &mut egui::Ui, dialog_open: bool) -> bool {
+    let response = ui.text_edit_singleline(text);
+    !dialog_open && response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
 /// The blue action button shared by the two quick-ramp panels — same size

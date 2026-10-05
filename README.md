@@ -21,6 +21,10 @@ Features:
 - CSV logging compatible with the bash toolchain (`match_temps.py`,
   `plot_ramp.py`); schedule runs, quick ramps and calibrations all land
   in the same log
+- keyboard: `Return` applies the manual setpoint and fires the quick-ramp
+  panels, `⌘Return` runs the schedule from the editor; in every dialog
+  `Return` accepts the primary action (confirm jump, calibrate & run, …)
+  and `Esc` cancels
 
 Developed and tested against `mock_cryocon.py`, an offline simulator of
 the instrument — including its firmware's ~0.84× rate behavior.

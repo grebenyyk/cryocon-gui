@@ -111,16 +111,36 @@ impl CryoApp {
         // code-editor tint keeps input visually distinct from console
         // output.
         let pane_h = ui.available_height().max(80.0);
+        let mut editor_focused = false;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.add(
-                    egui::TextEdit::multiline(&mut self.schedule_text)
-                        .code_editor()
-                        .desired_width(f32::INFINITY)
-                        .min_size(egui::vec2(0.0, pane_h - 1.0)),
-                );
+                // when a dialog window is up, it owns Return this frame —
+                // the editor must not also turn it into a newline (the
+                // return-key match is what inserts newlines; with it off,
+                // Enter is a no-op here). Computed after the button strip,
+                // so the very frame a dialog opens is already covered.
+                let dialog_open =
+                    self.pending_set.is_some() || self.rate_gate.is_some();
+                let mut editor = egui::TextEdit::multiline(&mut self.schedule_text)
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .min_size(egui::vec2(0.0, pane_h - 1.0));
+                if dialog_open {
+                    editor = editor.return_key(None::<egui::KeyboardShortcut>);
+                }
+                let r = ui.add(editor);
+                editor_focused = r.has_focus();
             });
+        // ⌘Return inside the editor runs the schedule (egui's return-key
+        // match requires unmodified Return, so no stray newline lands in
+        // the text). Invalid schedules are refused with a console ERROR,
+        // same as the run button.
+        if editor_focused
+            && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.command)
+        {
+            self.try_run_schedule();
+        }
     }
 
     /// Console: resizable bottom panel (its top edge is the drag handle).

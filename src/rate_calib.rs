@@ -251,6 +251,12 @@ fn run_leg(
         let watch = Instant::now();
         let mut pts: Vec<(f64, f64)> = Vec::new();
         for _ in 0..5 {
+            // honor cancel even here — this is the leg's blind spot
+            // otherwise (up to 5 s of no-ops)
+            if abort.load(Ordering::Relaxed) {
+                let _ = ask(requests, DeviceCmd::Stop);
+                return Err("aborted by user (heaters stopped)".into());
+            }
             std::thread::sleep(Duration::from_secs(1));
             match ask(requests, DeviceCmd::Poll) {
                 DeviceReply::Snapshot(s) => {
