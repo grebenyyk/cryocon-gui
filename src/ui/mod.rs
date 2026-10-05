@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 
 use crate::device::{DeviceCmd, DeviceEvent, Request, Snapshot, Worker};
 use crate::logging::CsvLog;
-use crate::schedule::{self, Progress};
+use crate::schedule::{self, Progress, Step};
 
 /// Palette (light) — kept in one place so the panels stay consistent.
 pub const BLUE: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x78, 0xd6);
@@ -368,6 +368,59 @@ impl CryoApp {
             None => self.console_push("ERROR: no device connection".into()),
             Some(_) => {} // Snapshot/Text never answer a set command
         }
+    }
+
+    /// Write one CSV row (if logging is on), using the latest snapshot.
+    /// After STOP ALL / disconnect the session's log is final — a new one
+    /// is only started by the next connect, never by a background poll.
+    /// End-of-day warm-up: one press — control on (if off), heat to
+    /// 298 K at full heater power, then hold. Skips the rate-calibration
+    /// gate on purpose: the exact rate does not matter, and the button
+    /// must work friction-free right after a STOP ALL (control off).
+    /// Run through the same runner as everything else, so abort, console
+    /// and CSV behave identically. The setpoint holds 298 K while
+    /// samples are taken out; STOP ALL closes the day.
+    pub fn start_warmup(&mut self) {
+        if self.runner.is_some() {
+            self.console_push(
+                "ERROR: a schedule is already running — abort it first".into(),
+            );
+            return;
+        }
+        if self.rate_gate.is_some() {
+            self.console_push(
+                "ERROR: a rate decision is pending — answer the calibration \
+                 window first"
+                    .into(),
+            );
+            return;
+        }
+        if self.link.is_none() {
+            self.console_push("ERROR: not connected".into());
+            return;
+        }
+        if self.control_on != Some(true) {
+            self.console_push("warm-up: engaging control".into());
+        }
+        self.console_push(
+            "warm-up: heating to 298 K at full heater power, then hold — \
+             expect roughly 15-20 min from ~100 K; press STOP ALL once \
+             the samples are out"
+                .into(),
+        );
+        // Rate 100 K/min commanded (the instrument accepts it): the glide
+        // runs far ahead of the plant, so the heater pegs at 100% — the
+        // physically fastest warm-up — and the loop still lands smoothly
+        // in closed loop at 298 (same end behavior as any RampP arrival).
+        // Verified on this unit 2026-09-30: sustained 100% heater, no
+        // fault, at commanded rate 100.
+        let steps = vec![
+            Step::Control,
+            Step::Rate { loop_n: 1, value_k_per_min: 100.0 },
+            Step::Set { loop_n: 1, value: 298.0, typ: Some("RampP".into()) },
+            Step::Stable { loop_n: 1, tol_k: 2.0, timeout_s: 3600 },
+        ];
+        self.start_steps(steps);
     }
 
     /// Write one CSV row (if logging is on), using the latest snapshot.

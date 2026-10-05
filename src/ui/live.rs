@@ -127,6 +127,25 @@ impl CryoApp {
             "the over-temperature disconnect is switched off — that is why \
              the default max setpoint equals its threshold",
         );
+
+        // ---- warm up (end of day) --------------------------------------
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+        if ui
+            .button("warm up to 298 K")
+            .on_hover_text(
+                "end of day: engages control (if off) and heats to room \
+                 temperature at full heater power (~15-20 min from ~100 K), \
+                 then holds there — so the samples are at room temperature \
+                 when you open the cryostat. You can leave it unattended; \
+                 the console announces the arrival. STOP ALL once the \
+                 samples are out. Rate calibration is skipped."
+            )
+            .clicked()
+        {
+            self.start_warmup();
+        }
     }
 
     /// The two quick-ramp panels under 'set setpoint': the same

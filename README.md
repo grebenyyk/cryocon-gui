@@ -25,6 +25,9 @@ Features:
   panels, `⌘Return` runs the schedule from the editor; in every dialog
   `Return` accepts the primary action (confirm jump, calibrate & run, …)
   and `Esc` cancels
+- one-click end-of-day warm-up: engages control, heats to room temperature
+  at full heater power and holds there for sample removal (STOP ALL closes
+  the day)
 
 Developed and tested against `mock_cryocon.py`, an offline simulator of
 the instrument — including its firmware's ~0.84× rate behavior.
