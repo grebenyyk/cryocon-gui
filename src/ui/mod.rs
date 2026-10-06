@@ -30,6 +30,22 @@ pub(crate) fn return_pressed(ui: &mut egui::Ui) -> bool {
     ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none())
 }
 
+/// Which native file dialog is in flight, so `drain_dialog` knows what
+/// to do with the answer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DialogPurpose {
+    /// the connect flow's "where should this session's CSV live?"
+    ConnectLogFolder,
+    /// the top-bar "folder…" (log folder for the NEXT session)
+    ChangeLogFolder,
+    /// schedule editor "load…"
+    LoadSchedule,
+    /// schedule editor "save…"
+    SaveSchedule,
+}
+
+type DialogRx = Receiver<(DialogPurpose, Option<PathBuf>)>;
+
 /// One point of chart history.
 pub struct Sample {
     pub t_min: f64,
@@ -69,6 +85,9 @@ pub struct CryoApp {
     pub logging_enabled: bool,
     pub log_dir: PathBuf,
     pub csv: Option<CsvLog>,
+    /// Native file dialog in flight (non-blocking sheet; see
+    /// [`CryoApp::open_dialog`]).
+    pub dialog: Option<(DialogPurpose, DialogRx)>,
 
     // schedule
     pub schedule_text: String,
@@ -134,6 +153,7 @@ impl CryoApp {
             logging_enabled: true,
             log_dir: dirs_documents().join("cryocon_logs"),
             csv: None,
+            dialog: None,
             schedule_text: schedule::TEMPLATE.into(),
             runner: None,
             prog_rx: None,
@@ -173,6 +193,23 @@ impl CryoApp {
     }
 
     fn connect(&mut self) {
+        // validate the port up front so a typo fails fast, before the
+        // native sheet even opens
+        if let Err(_) = self.port.parse::<u16>() {
+            self.console_push("ERROR: port is not a number".into());
+            return;
+        }
+        // Ask where this session's log should live — every session, so the
+        // choice can never be a forgotten stale default. Non-blocking:
+        // `finish_connect` runs when the sheet answers (see drain_dialog).
+        if self.logging_enabled {
+            self.open_dialog(DialogPurpose::ConnectLogFolder);
+            return;
+        }
+        self.finish_connect();
+    }
+
+    fn finish_connect(&mut self) {
         let port: u16 = match self.port.parse() {
             Ok(p) => p,
             Err(_) => {
@@ -180,32 +217,6 @@ impl CryoApp {
                 return;
             }
         };
-        // Ask where this session's log should live — every session, so the
-        // choice can never be a forgotten stale default.
-        if self.logging_enabled {
-            match rfd::FileDialog::new()
-                .set_title("folder for this session's CSV log")
-                .set_directory(&self.log_dir)
-                .pick_folder()
-            {
-                Some(dir) => {
-                    self.log_dir = dir;
-                    self.csv = None; // a fresh file is created in that folder
-                    self.console_push(format!(
-                        "log folder for this session: {}",
-                        self.log_dir.display()
-                    ));
-                }
-                None => {
-                    self.logging_enabled = false;
-                    self.console_push(
-                        "no folder chosen — CSV logging is OFF for this session \
-                         (re-enable via the checkbox + folder… button)"
-                            .into(),
-                    );
-                }
-            }
-        }
         let (req_tx, req_rx) = std::sync::mpsc::channel();
         let (ev_tx, ev_rx) = std::sync::mpsc::channel();
         Worker::spawn(self.host.clone(), port, req_rx, ev_tx);
@@ -216,6 +227,105 @@ impl CryoApp {
         self.log_finalized = false; // new session, new log allowed
         self.control_on = None; // unknown until we command it
         self.console_push(format!("connecting to {}:{} ...", self.host, port));
+    }
+
+    /// Open a native file dialog WITHOUT blocking the UI thread. The old
+    /// blocking dialogs froze the app mid-frame and left the main window
+    /// with a jarring twitch when macOS handed control back; rfd's async
+    /// API shows a proper attached sheet instead, the app loop keeps
+    /// running, and the answer arrives on a channel (`drain_dialog`
+    /// applies it).
+    fn open_dialog(&mut self, purpose: DialogPurpose) {
+        if self.dialog.is_some() {
+            return; // one dialog at a time
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        match purpose {
+            DialogPurpose::ConnectLogFolder | DialogPurpose::ChangeLogFolder => {
+                let fut = rfd::AsyncFileDialog::new()
+                    .set_title("folder for the session's CSV log")
+                    .set_directory(self.log_dir.clone())
+                    .pick_folder();
+                wait_dialog(purpose, fut, tx);
+            }
+            DialogPurpose::LoadSchedule => {
+                let fut = rfd::AsyncFileDialog::new()
+                    .add_filter("schedule", &["txt"])
+                    .pick_file();
+                wait_dialog(purpose, fut, tx);
+            }
+            DialogPurpose::SaveSchedule => {
+                let fut = rfd::AsyncFileDialog::new()
+                    .set_file_name("schedule.txt")
+                    .save_file();
+                wait_dialog(purpose, fut, tx);
+            }
+        }
+        self.dialog = Some((purpose, rx));
+    }
+
+    /// Apply a native dialog's answer once it arrives.
+    fn drain_dialog(&mut self) {
+        let msg = match &self.dialog {
+            Some((_, rx)) => rx.try_recv().ok(),
+            None => return,
+        };
+        let (purpose, path) = match msg {
+            Some(m) => m,
+            None => return, // still open
+        };
+        self.dialog = None;
+        match purpose {
+            DialogPurpose::ConnectLogFolder => {
+                match path {
+                    Some(dir) => {
+                        self.log_dir = dir;
+                        self.csv = None; // a fresh file is created in that folder
+                        self.console_push(format!(
+                            "log folder for this session: {}",
+                            self.log_dir.display()
+                        ));
+                    }
+                    None => {
+                        self.logging_enabled = false;
+                        self.console_push(
+                            "no folder chosen — CSV logging is OFF for this session \
+                             (re-enable via the checkbox + folder… button)"
+                                .into(),
+                        );
+                    }
+                }
+                self.finish_connect();
+            }
+            DialogPurpose::ChangeLogFolder => {
+                if let Some(dir) = path {
+                    self.log_dir = dir;
+                    match &self.csv {
+                        Some(_open_log) => self.console_push(format!(
+                            "next session logs to {} (current file keeps going)",
+                            self.log_dir.display()
+                        )),
+                        None => self.console_push(format!(
+                            "log folder set: {}",
+                            self.log_dir.display()
+                        )),
+                    }
+                }
+            }
+            DialogPurpose::LoadSchedule => {
+                if let Some(p) = path {
+                    match std::fs::read_to_string(&p) {
+                        Ok(text) => self.schedule_text = text,
+                        Err(e) => self.console_push(format!("ERROR: {e}")),
+                    }
+                }
+            }
+            DialogPurpose::SaveSchedule => {
+                if let Some(p) = path {
+                    let _ = std::fs::write(&p, &self.schedule_text);
+                }
+            }
+        }
     }
 
     /// Engage or disengage loop control (the instrument's CONTROL / STOP).
@@ -556,6 +666,20 @@ fn dirs_documents() -> PathBuf {
         .unwrap_or_else(|_| PathBuf::from("."))
 }
 
+/// Park a dialog future on a helper thread; the answer (path, or None if
+/// cancelled) is sent back for `drain_dialog`. `pollster` is a minimal
+/// executor — enough for one future, no async runtime in the app.
+fn wait_dialog(
+    purpose: DialogPurpose,
+    fut: impl std::future::Future<Output = Option<rfd::FileHandle>> + Send + 'static,
+    tx: std::sync::mpsc::Sender<(DialogPurpose, Option<PathBuf>)>,
+) {
+    std::thread::spawn(move || {
+        let result = pollster::block_on(fut).map(|h| h.path().to_path_buf());
+        let _ = tx.send((purpose, result));
+    });
+}
+
 impl eframe::App for CryoApp {
     // Called by eframe while the event loop is still alive, right before
     // the window/renderer teardown. On this macOS version that teardown
@@ -582,6 +706,7 @@ impl eframe::App for CryoApp {
         let ctx = ui.ctx().clone();
         self.drain_events();
         self.drain_progress();
+        self.drain_dialog();
 
         self.top_bar(ui);
         self.banner(ui);
@@ -753,9 +878,18 @@ impl eframe::App for CryoApp {
 
 impl CryoApp {
     fn top_bar(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::top("top").show(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
+        egui::Panel::top("top")
+            // Fixed height. A center-aligned row inside a height-hugging
+            // panel centers against the panel's AVAILABLE height — which
+            // here is the whole remaining window — and that fed back
+            // frame by frame until the strip filled the app. Bounding the
+            // height gives the centering a small, well-defined box (and
+            // makes vertical drift impossible).
+            .exact_size(44.0)
+            .show(ui, |ui| {
+                // centered row; not plain `ui.horizontal()` — since egui
+                // 0.36 that top-aligns its content
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let linked = self.link.is_some();
                 ui.label("host");
                 ui.text_edit_singleline(&mut self.host).on_hover_text(
@@ -775,8 +909,13 @@ impl CryoApp {
                     if ui.button("disconnect").clicked() {
                         self.disconnect();
                     }
-                } else if ui.button("connect").clicked() {
-                    self.connect();
+                } else {
+                    // a sheet is up: don't let a second connect start
+                    ui.add_enabled_ui(self.dialog.is_none(), |ui| {
+                        if ui.button("connect").clicked() {
+                            self.connect();
+                        }
+                    });
                 }
                 // status lamp
                 let (color, note) = match &self.link_state {
@@ -812,22 +951,24 @@ impl CryoApp {
                 )
                 .on_hover_text(self.log_dir.display().to_string());
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Quiet by default; loud (filled red) exactly when a
-                    // schedule is running and stopping actually matters.
-                    let hot = self.runner.is_some();
-                    let text = egui::RichText::new("STOP ALL")
-                        .color(if hot { egui::Color32::WHITE } else { RED });
-                    let mut btn = egui::Button::new(text);
-                    if hot {
-                        btn = btn.fill(RED);
-                    }
-                    if ui.add_sized([110.0, 28.0], btn).clicked() {
-                        self.stop_all();
-                    }
-                });
+                // Same left-to-right flow and vertical alignment as every
+                // other element in the bar — no floating right-anchored
+                // cell. When the window gets narrow, this clips away like
+                // the rest (STOP ALL goes last, after the folder name).
+                ui.separator();
+                // Quiet by default; loud (filled red) exactly when a
+                // schedule is running and stopping actually matters.
+                let hot = self.runner.is_some();
+                let text = egui::RichText::new("STOP ALL")
+                    .color(if hot { egui::Color32::WHITE } else { RED });
+                let mut btn = egui::Button::new(text);
+                if hot {
+                    btn = btn.fill(RED);
+                }
+                if ui.add_sized([110.0, 28.0], btn).clicked() {
+                    self.stop_all();
+                }
             });
-            ui.add_space(4.0);
         });
     }
 

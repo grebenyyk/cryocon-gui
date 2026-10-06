@@ -727,6 +727,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "pollster 0.4.0",
  "rfd",
 ]
 

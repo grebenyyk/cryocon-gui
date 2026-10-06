@@ -50,23 +50,10 @@ impl CryoApp {
                 // run controls (kept visually grouped by a separator)
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("load…").min_size([0.0, 26.0].into())).clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .add_filter("schedule", &["txt"])
-                            .pick_file()
-                        {
-                            match std::fs::read_to_string(&p) {
-                                Ok(text) => self.schedule_text = text,
-                                Err(e) => self.console_push(format!("ERROR: {e}")),
-                            }
-                        }
+                        self.open_dialog(super::DialogPurpose::LoadSchedule);
                     }
                     if ui.add(egui::Button::new("save…").min_size([0.0, 26.0].into())).clicked() {
-                        if let Some(p) = rfd::FileDialog::new()
-                            .set_file_name("schedule.txt")
-                            .save_file()
-                        {
-                            let _ = std::fs::write(&p, &self.schedule_text);
-                        }
+                        self.open_dialog(super::DialogPurpose::SaveSchedule);
                     }
                     if ui.add(egui::Button::new("template").min_size([0.0, 26.0].into())).clicked() {
                         self.schedule_text = schedule::TEMPLATE.into();
