@@ -75,6 +75,11 @@ pub struct CryoApp {
     pub port: String, // kept as text for the edit field
     pub link: Option<Link>,
     pub link_state: LinkState,
+    /// Have we EVER reached the instrument this app run? The "connection
+    /// lost" banner must only appear for a genuine loss — not flash in
+    /// and out during a normal first connect (it inserts between the top
+    /// bar and the panels, shoving the layout around).
+    pub ever_connected: bool,
 
     // live data
     pub snap: Snapshot,
@@ -147,6 +152,7 @@ impl CryoApp {
             port: "5000".into(),
             link: None,
             link_state: LinkState::Off,
+            ever_connected: false,
             snap: Snapshot::default(),
             history: Vec::new(),
             t0: std::time::Instant::now(),
@@ -407,6 +413,7 @@ impl CryoApp {
         }
         self.csv = None; // close the log file with the session
         self.link_state = LinkState::Off;
+        self.ever_connected = false;
         self.console_push("disconnected".into());
     }
 
@@ -533,6 +540,36 @@ impl CryoApp {
         self.start_steps(steps);
     }
 
+    /// "new session" in the charts: rotate the log and start the charts
+    /// afresh, without touching the instrument — for several experiments
+    /// in one connection, each with a dedicated log. The old file ends
+    /// with a pointer row; a fresh timestamped file opens in the same
+    /// folder with a marker row. This also re-arms logging after STOP ALL
+    /// (which finalizes the log until reconnect).
+    pub fn new_session(&mut self) {
+        let had_log = self.csv.is_some();
+        if had_log {
+            self.csv_row("new session — log ends here");
+        }
+        self.csv = None; // close (and thus flush) the old file
+        self.log_finalized = false; // deliberate: a fresh file is wanted
+        self.history.clear();
+        self.t0 = std::time::Instant::now();
+        self.csv_row("new session"); // creates the fresh file with a marker
+        let msg = match (&self.csv, had_log) {
+            (Some(new), true) => format!(
+                "new session: charts cleared — log rotated, now logging to {}",
+                new.path.display()
+            ),
+            (Some(new), false) => format!(
+                "new session: charts cleared — logging to {}",
+                new.path.display()
+            ),
+            (None, _) => "new session: charts cleared (CSV logging is off)".into(),
+        };
+        self.console_push(msg);
+    }
+
     /// Write one CSV row (if logging is on), using the latest snapshot.
     /// After STOP ALL / disconnect the session's log is final — a new one
     /// is only started by the next connect, never by a background poll.
@@ -569,6 +606,7 @@ impl CryoApp {
             match ev {
                 Ok(DeviceEvent::Connected(idn)) => {
                     self.link_state = LinkState::On { idn: idn.clone() };
+                    self.ever_connected = true;
                     self.console_push(format!("connected: {idn}"));
                     // provenance row: a log should record where it came
                     // from. The mock imitates the real IDN down to the
@@ -973,7 +1011,12 @@ impl CryoApp {
     }
 
     fn banner(&mut self, ui: &mut egui::Ui) {
-        let show = matches!(self.link_state, LinkState::Connecting) && self.link.is_some();
+        // Only for a genuine loss: a fresh connect also sits in
+        // Connecting for a moment, and flashing the banner then shoves
+        // the whole layout down and back (the "twitch").
+        let show = matches!(self.link_state, LinkState::Connecting)
+            && self.link.is_some()
+            && self.ever_connected;
         if !show {
             return;
         }

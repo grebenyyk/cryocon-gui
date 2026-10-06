@@ -475,12 +475,18 @@ def main():
 
     threading.Thread(target=tcp_server, args=(tcp_port,), daemon=True).start()
 
-    t0 = time.time()
-    last = t0
+    last = time.monotonic()
     while True:
         time.sleep(0.25)
-        now = time.time()
-        STATE.tick(now - last)
+        now = time.monotonic()
+        # Clamp dt: this process can sit suspended for a long stretch
+        # (App Nap, closed lid, heavy load) or meet a wall-clock jump.
+        # The update  t += (target - t) * dt/tau  is unstable whenever
+        # dt > 2*tau, and one multi-minute gap once blew the channels up
+        # to ~-1e50 K. A stall should pause the simulation, not explode
+        # it; the 1 s cap is far below the smallest tau (heating, 3 s).
+        dt = max(0.0, min(now - last, 1.0))
+        STATE.tick(dt)
         last = now
 
 

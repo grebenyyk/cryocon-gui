@@ -3,7 +3,7 @@
 
 use super::{CryoApp, BLUE, GREEN, INK2, MUTED, ORANGE, RED, TYPES};
 use super::rate_gate::PendingRun;
-use egui_plot::{Legend, Line, Plot};
+use egui_plot::{Legend, Line, Plot, PlotPoint, PlotResponse};
 
 /// One line of help per loop type (hover the dropdown entries).
 /// Wording per the Model 22C User's Guide (control types table).
@@ -289,6 +289,17 @@ impl CryoApp {
                     self.history.clear();
                     self.t0 = std::time::Instant::now();
                 }
+                if ui
+                    .small_button("new session")
+                    .on_hover_text(
+                        "clear the charts and start a fresh CSV log in the \
+                         same folder — for several experiments in one \
+                         connection. The instrument is not touched."
+                    )
+                    .clicked()
+                {
+                    self.new_session();
+                }
             });
         });
 
@@ -311,7 +322,7 @@ impl CryoApp {
         // the plots share the charts panel's height (temperature gets the
         // larger share), so dragging the panel's bottom edge resizes both
         let avail = ui.available_height();
-        Plot::new("temperature")
+        let t_resp = Plot::new("temperature")
             .legend(Legend::default())
             .height((avail * 0.55).max(130.0))
             .x_axis_label("elapsed, min")
@@ -324,7 +335,10 @@ impl CryoApp {
                     p.line(Line::new("setpoint", sp).color(MUTED).width(1.6));
                 }
             });
-        Plot::new("power")
+        cursor_readout(ui, &t_resp, |v| {
+            format!("t {:.1} min   T {:.2} K", v.x, v.y)
+        });
+        let p_resp = Plot::new("power")
             .legend(Legend::default())
             .height(ui.available_height().max(100.0))
             .x_axis_label("elapsed, min")
@@ -334,6 +348,9 @@ impl CryoApp {
                     p.line(Line::new("heater power", pw).color(ORANGE).width(1.8));
                 }
             });
+        cursor_readout(ui, &p_resp, |v| {
+            format!("t {:.1} min   P {:.1} %", v.x, v.y)
+        });
     }
 }
 
@@ -347,6 +364,50 @@ fn big_tile(ui: &mut egui::Ui, name: &str, v: Option<f64>, unit: &str, color: eg
     });
     ui.label(egui::RichText::new(name).color(MUTED));
     ui.add_space(8.0);
+}
+
+/// A legend-style box in the plot's lower-right corner showing the value
+/// under the crosshair. Nothing is drawn while the cursor is elsewhere —
+/// the readout follows the pointer, so it doubles as a zoom/pan companion
+/// (the coordinates update while dragging).
+fn cursor_readout(
+    ui: &mut egui::Ui,
+    resp: &PlotResponse<()>,
+    fmt: impl Fn(PlotPoint) -> String,
+) {
+    let Some(pointer) = resp.response.hover_pos() else {
+        return;
+    };
+    if !resp.response.rect.contains(pointer) {
+        return;
+    }
+    let value = resp.transform.value_from_position(pointer);
+    let font = egui::TextStyle::Small.resolve(ui.style());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(fmt(value), font, ui.visuals().text_color());
+    let pad = 4.0;
+    let size = galley.size() + egui::vec2(pad * 2.0, pad * 2.0);
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(
+            resp.response.rect.right() - size.x - 6.0,
+            resp.response.rect.bottom() - size.y - 6.0,
+        ),
+        size,
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, 4.0, ui.visuals().window_fill);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        ui.visuals().widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+    painter.galley(
+        egui::pos2(rect.left() + pad, rect.top() + pad),
+        galley,
+        ui.visuals().text_color(),
+    );
 }
 
 /// A single-line edit that reports being submitted with Return (the idiom

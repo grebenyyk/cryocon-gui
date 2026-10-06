@@ -10,8 +10,8 @@ fn main() -> eframe::Result<()> {
             .expect("embedded app icon must decode");
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
-            .with_title("cryocon-gui — Cryo-con 22C")
+            .with_inner_size([1200.0, 810.0])
+            .with_title("cryocon-gui")
             .with_icon(std::sync::Arc::new(icon)),
         ..Default::default()
     };
