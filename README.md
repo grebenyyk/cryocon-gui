@@ -1,7 +1,10 @@
-# cryocon-gui
+# <img src="assets/icon-1024.png" width="42" alt=""> cryocon-gui
 
 A macOS GUI for the **Cryo-con**/**PHYSIKE** 22C cryogenic temperature
 controller, speaking its ASCII command protocol over TCP (port 5000).
+
+![cryocon-gui main window: live readout, temperature and heater-power
+charts with crosshair readout, schedule editor, console](docs/screenshot.png)
 
 Features:
 - connect / auto-reconnect, live readout (temperature, setpoint, heater power)
