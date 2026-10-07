@@ -158,6 +158,9 @@ pub fn correct_rates(steps: &mut [Step], marks: &[usize], scale: f64) -> Vec<Str
 /// What the calibration thread reports back to the UI.
 pub enum CalibMsg {
     Status(String),
+    /// the leg is about to command the instrument for the first time
+    /// (rate/type/setpoint) — from here on, cancelling must stop heaters
+    Commanded,
     /// Ok(scale) = actual slope / commanded rate
     Done(Result<f64, String>),
 }
@@ -254,8 +257,8 @@ fn run_leg(
             // honor cancel even here — this is the leg's blind spot
             // otherwise (up to 5 s of no-ops)
             if abort.load(Ordering::Relaxed) {
-                let _ = ask(requests, DeviceCmd::Stop);
-                return Err("aborted by user (heaters stopped)".into());
+                // nothing was commanded yet — the instrument is untouched
+                return Err("aborted by user".into());
             }
             std::thread::sleep(Duration::from_secs(1));
             match ask(requests, DeviceCmd::Poll) {
@@ -289,6 +292,8 @@ fn run_leg(
     }
 
     // ---- out leg ----------------------------------------------------
+    // from here the leg owns heater state: a cancel must STOP
+    let _ = msg.send(CalibMsg::Commanded);
     say(format!(
         "out leg: {t0:.1} -> {target:.1} K at commanded {:.3} K/min",
         leg.rate_cmd
@@ -305,8 +310,10 @@ fn run_leg(
     let outcome: Result<f64, String>;
     loop {
         if abort.load(Ordering::Relaxed) {
-            let _ = ask(requests, DeviceCmd::Stop);
-            return Err("aborted by user (heaters stopped)".into());
+            // the UI cancel / STOP ALL sent the STOP synchronously; a
+            // delayed STOP from here could kill a run launched after the
+            // cancel (it did, once)
+            return Err("aborted by user".into());
         }
         std::thread::sleep(Duration::from_secs(1));
         let (t, p, ctl) = match ask(requests, DeviceCmd::Poll) {
@@ -395,8 +402,7 @@ fn run_leg(
     let back = Instant::now();
     loop {
         if abort.load(Ordering::Relaxed) {
-            let _ = ask(requests, DeviceCmd::Stop);
-            return Err("aborted during the back leg (heaters stopped)".into());
+            return Err("aborted during the back leg".into());
         }
         std::thread::sleep(Duration::from_secs(2));
         if let DeviceReply::Snapshot(s) = ask(requests, DeviceCmd::Poll) {

@@ -8,6 +8,7 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Instant;
 
 use super::{return_pressed, CryoApp, BLUE, INK2, MUTED, RED};
+use crate::device::DeviceCmd;
 use crate::rate_calib::{self, CalibMsg, LegPlan};
 use crate::schedule::Step;
 
@@ -26,13 +27,16 @@ pub enum RateGate {
     Proposal { run: PendingRun, leg: LegPlan },
     /// not enough heating headroom to calibrate — only skip/cancel
     NoHeadroom { run: PendingRun, why: String },
-    /// leg in flight; status lines arrive on the channel
+    /// leg in flight; status lines arrive on the channel. `commanded`
+    /// flips once the leg has written to the instrument — a cancel only
+    /// needs to STOP heaters after that point.
     Running {
         run: PendingRun,
         rx: Receiver<CalibMsg>,
         abort: std::sync::Arc<AtomicBool>,
         status: Vec<String>,
         started: Instant,
+        commanded: bool,
     },
     /// leg finished badly — offer to run uncorrected
     Failed { run: PendingRun, why: String },
@@ -117,12 +121,11 @@ impl CryoApp {
         match run {
             PendingRun::Quick { rate, target } => {
                 let cmd = rate / scale;
-                if self.control_on != Some(true) {
-                    self.console_push(
-                        "note: loops are OFF — setpoint stored, but nothing \
-                         heats until 'control on'"
-                            .into(),
-                    );
+                // a 'go' is an explicit command to move: engage control
+                // (a cancelled calibration leaves it OFF otherwise)
+                let engage = self.control_on != Some(true);
+                if engage {
+                    self.console_push("quick ramp: engaging control".into());
                 }
                 if (cmd - rate).abs() > 0.001 {
                     self.console_push(format!(
@@ -134,10 +137,12 @@ impl CryoApp {
                     "quick ramp: loop1 -> {target} K (RampP) at commanded \
                      {cmd:.3} K/min"
                 ));
-                let steps = vec![
-                    Step::Rate { loop_n: 1, value_k_per_min: cmd },
-                    Step::Set { loop_n: 1, value: target, typ: Some("RampP".into()) },
-                ];
+                let mut steps = Vec::new();
+                if engage {
+                    steps.push(Step::Control);
+                }
+                steps.push(Step::Rate { loop_n: 1, value_k_per_min: cmd });
+                steps.push(Step::Set { loop_n: 1, value: target, typ: Some("RampP".into()) });
                 self.start_steps(steps);
             }
             PendingRun::Schedule { mut steps } => {
@@ -387,11 +392,27 @@ impl CryoApp {
                 // leg and close the window NOW (the thread's later Done
                 // lands nowhere and the queued run is dropped). For the
                 // other gate states it is a plain dismiss.
-                if let Some(RateGate::Running { abort, .. }) = self.rate_gate.take() {
+                if let Some(RateGate::Running { abort, commanded, .. }) =
+                    self.rate_gate.take()
+                {
                     abort.store(true, Ordering::Relaxed);
-                    self.console_push(
-                        "rate calibration cancelled — stopping heaters".into(),
-                    );
+                    if commanded {
+                        // the leg has written to the instrument: remove
+                        // heat NOW, synchronously — a delayed STOP from
+                        // the thread could kill a run launched later
+                        let _ = self.ask(DeviceCmd::Stop);
+                        self.console_push(
+                            "rate calibration cancelled — stopping heaters"
+                                .into(),
+                        );
+                    } else {
+                        // cancelled during settling: nothing was commanded,
+                        // the instrument is exactly as it was before
+                        self.console_push(
+                            "rate calibration cancelled — nothing was changed"
+                                .into(),
+                        );
+                    }
                     self.csv_row("rate calibration cancelled");
                 }
             }
@@ -429,6 +450,7 @@ impl CryoApp {
             abort,
             status: Vec::new(),
             started: Instant::now(),
+            commanded: false,
         });
     }
 
@@ -439,9 +461,11 @@ impl CryoApp {
         // must end before `self` is mutated (a first Rust lesson).
         let mut lines = Vec::new();
         let mut done: Option<Result<f64, String>> = None;
+        let mut commanded_now = false;
         if let Some(RateGate::Running { rx, .. }) = &self.rate_gate {
             loop {
                 match rx.try_recv() {
+                    Ok(CalibMsg::Commanded) => commanded_now = true,
                     Ok(CalibMsg::Status(line)) => lines.push(line),
                     Ok(CalibMsg::Done(res)) => {
                         done = Some(res);
@@ -453,6 +477,11 @@ impl CryoApp {
                         break;
                     }
                 }
+            }
+        }
+        if commanded_now {
+            if let Some(RateGate::Running { commanded, .. }) = &mut self.rate_gate {
+                *commanded = true;
             }
         }
         if !lines.is_empty() {

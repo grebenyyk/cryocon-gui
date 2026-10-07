@@ -397,7 +397,16 @@ def handle_command(line):
         if key.startswith("TYPE"):
             if q or arg is None:
                 return lp["type"]
-            lp["type"] = arg.upper()
+            new_type = arg.upper()
+            if new_type != lp["type"] and new_type in ("RAMPP", "RAMPT"):
+                # Entering ramp mode: the internal setpoint must start from
+                # where the plant is NOW. It is otherwise stale (set once
+                # at boot, reset only by setpoint writes), and one tick
+                # would chase the boot temperature — a ~30 K teleport when
+                # the loop is far from it (found 2026-10-07: a calibration
+                # leg switching to RAMPP at 100 K jumped straight to 133 K).
+                lp["int_sp"] = STATE.channels[lp["source"][-1]]
+            lp["type"] = new_type
             print("[state] loop %d type -> %s" % (n, lp["type"]))
             return None
         if key.startswith("SOURCE"):
