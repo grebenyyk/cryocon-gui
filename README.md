@@ -1,5 +1,5 @@
-# <img src="assets/icon-1024.png" width="42" alt=""> cryocon-gui
-
+# cryocon-gui
+<img src="assets/icon-1024.png" width="42" alt="">
 A macOS GUI for the **Cryo-con**/**PHYSIKE** 22C cryogenic temperature
 controller, speaking its ASCII command protocol over TCP (port 5000).
 
